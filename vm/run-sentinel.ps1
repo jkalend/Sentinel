@@ -252,8 +252,20 @@ function Invoke-Resume {
         $result.resume_delta = $events - $preEvents
         $result.resume_bookmark = Get-StatusValue -Text $statusText -Name 'bookmark'
         $result.resume_status = Limit-Text $statusText
+        $result.main_ok = [bool]$state.main_ok
         $taskDetails = Get-ScheduledTaskInfo -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
         $result.resume_task_last_result = if ($taskDetails) { $taskDetails.LastTaskResult } else { $null }
+
+        $preBookmarkText = [string]$state.pre_bookmark
+        $postBookmarkText = [string]$result.resume_bookmark
+        $preIncarnation = if ($preBookmarkText -match 'incarnation=(\S+)') { $Matches[1] } else { '' }
+        $postIncarnation = if ($postBookmarkText -match 'incarnation=(\S+)') { $Matches[1] } else { '' }
+        $preRecord = if ($preBookmarkText -match 'record=(\d+)') { [long]$Matches[1] } else { -1 }
+        $postRecord = if ($postBookmarkText -match 'record=(\d+)') { [long]$Matches[1] } else { -1 }
+        $sameIncarnation = ($preIncarnation -ne '' -and $preIncarnation -eq $postIncarnation)
+        $bookmarkAdvanced = ($preRecord -ge 0 -and $postRecord -gt $preRecord)
+        $result.resume_same_incarnation = $sameIncarnation
+        $result.resume_bookmark_advanced = $bookmarkAdvanced
 
         Stop-ScheduledTask -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
@@ -281,25 +293,35 @@ function Invoke-Resume {
         $result.resume_uninstall = Limit-Text $uninstallOutput
 
         $uninstallJson = $null
-        try { $uninstallJson = $uninstallOutput | ConvertFrom-Json } catch { }
+        try { $uninstallJson = $uninstallOutput | ConvertFrom-Json }
+        catch { $result.resume_uninstall_parse_error = $_.Exception.Message }
         $channelAfter = (& wevtutil.exe gl 'Microsoft-Windows-Sysmon/Operational' 2>&1 | Select-String -Pattern '^\s*channelAccess:\s*' | Select-Object -First 1)
         $channelAfterText = if ($channelAfter) { $channelAfter.ToString() } else { '' }
         $channelAfterAcl = ($channelAfterText -replace '^\s*channelAccess:\s*', '').Trim()
         $oldAcl = [string]$state.channel_acl_before
         $uninstallRestored = ([bool]($uninstallJson -and $uninstallJson.channel_acl_restored) -and $oldAcl -ne '' -and $channelAfterAcl -eq $oldAcl)
+        $userRightsRestored = [bool]($uninstallJson -and $uninstallJson.user_rights_restored)
+        $agentTaskRemoved = -not [bool](Get-ScheduledTask -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue)
         $readerRemoved = -not [bool](Get-LocalUser -Name 'sentinel-reader' -ErrorAction SilentlyContinue)
         $installRemoved = -not (Test-Path -LiteralPath $installedRoot)
         $result.resume_uninstall_restored = $uninstallRestored
+        $result.resume_user_rights_restored = $userRightsRestored
+        $result.resume_agent_task_removed = $agentTaskRemoved
         $result.resume_reader_removed = $readerRemoved
         $result.resume_install_removed = $installRemoved
 
         $result.resume_ok = (
             $events -gt $preEvents -and
+            $sameIncarnation -and
+            $bookmarkAdvanced -and
             $taskState -eq 'Running' -and
             $verifyExit -eq 0 -and
+            [bool]$state.main_ok -and
             [bool]$state.installer_ok -and
             $uninstallExit -eq 0 -and
             $uninstallRestored -and
+            $userRightsRestored -and
+            $agentTaskRemoved -and
             $readerRemoved -and
             $installRemoved
         )
@@ -312,6 +334,8 @@ function Invoke-Resume {
         Write-Log "resume failed: $($_.Exception.Message)"
     }
     finally {
+        Unregister-ScheduledTask -TaskName 'SentinelResume' -Confirm:$false -ErrorAction SilentlyContinue
+        $result.resume_task_removed = -not [bool](Get-ScheduledTask -TaskName 'SentinelResume' -ErrorAction SilentlyContinue)
         Finish $result
     }
 }
@@ -638,12 +662,24 @@ try {
                 $outsiderDenied
             )
 
+            $mainOk = (
+                $firstRunExit -eq 0 -and
+                $runExit -eq 0 -and
+                $verifyExit -eq 0 -and
+                $timelineExit -eq 0 -and
+                $replayExit -eq 0 -and
+                $captureExit -eq 0 -and
+                $captureFiles -gt 0 -and
+                $probeOk
+            )
+
             if (-not $NoReboot) {
                 $preStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $installedDb)
                 $preEvents = Get-StatusNumber -Text $preStatus.Output -Name 'events'
                 if ($preEvents -lt 0) { $preEvents = $installedEvents }
                 $preBookmark = Get-StatusValue -Text $preStatus.Output -Name 'bookmark'
                 $state = [ordered]@{
+                    main_ok = $mainOk
                     pre_events = $preEvents
                     pre_bookmark = $preBookmark
                     pre_task_state = $taskState
@@ -670,6 +706,7 @@ try {
                     -Settings $resumeSettings -Principal $resumePrincipal -Force | Out-Null
 
                 $result.reboot_resume = $true
+                $result.main_ok = $mainOk
                 $result.pre_events = $preEvents
                 $result.pre_bookmark = $preBookmark
                 $result.installer_before_reboot = $preInstallerOk
@@ -695,7 +732,8 @@ try {
             $channelAfterUninstallText = if ($channelAfterUninstall) { $channelAfterUninstall.ToString() } else { '' }
             $oldAcl = if ($installData -and $installData.channel_acl_before) { $installData.channel_acl_before } else { '' }
             $uninstallJson = $null
-            try { $uninstallJson = $uninstallOutput | ConvertFrom-Json } catch { }
+            try { $uninstallJson = $uninstallOutput | ConvertFrom-Json }
+            catch { $result.uninstall_parse_error = $_.Exception.Message }
             $channelAfterUninstallAcl = ($channelAfterUninstallText -replace '^\s*channelAccess:\s*', '').Trim()
             $uninstallRestored = ([bool]($uninstallJson -and $uninstallJson.channel_acl_restored) -and $oldAcl -ne '' -and $channelAfterUninstallAcl -eq $oldAcl)
             $readerRemoved = -not [bool](Get-LocalUser -Name 'sentinel-reader' -ErrorAction SilentlyContinue)

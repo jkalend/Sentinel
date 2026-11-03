@@ -164,16 +164,18 @@ static void Gaps(Dictionary<string, string?> options)
 
 static void Status(Dictionary<string, string?> options)
 {
-    using var store = OpenStore(options);
-    store.Initialize();
-    var events = store.ReadEvents();
-    var alerts = store.ReadAlerts();
-    var gaps = store.ReadGaps();
-    var bookmark = store.GetBookmark(SysmonXmlReader.SysmonChannel);
+    var databasePath = Get(options, "db") ?? "data/sentinel.db";
+    if (!File.Exists(databasePath))
+    {
+        throw new FileNotFoundException($"database not found: {databasePath}");
+    }
 
-    Console.WriteLine($"events: {events.Count}");
-    Console.WriteLine($"alerts: {alerts.Count}");
-    Console.WriteLine($"gaps: {gaps.Count}");
+    using var store = new SqliteEventStore(databasePath, readOnly: true);
+    var (counts, bookmark) = store.GetStatus(SysmonXmlReader.SysmonChannel);
+
+    Console.WriteLine($"events: {counts.Events}");
+    Console.WriteLine($"alerts: {counts.Alerts}");
+    Console.WriteLine($"gaps: {counts.Gaps}");
     if (bookmark is null)
     {
         Console.WriteLine("bookmark: none");

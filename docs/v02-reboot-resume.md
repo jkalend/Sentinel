@@ -23,37 +23,40 @@ stores new events, and can still be torn down cleanly.
 
 | Check | Result |
 |---|---|
-| Main store | **2,239 events**; 8 alerts; 0 gaps |
-| Clean start | 50-event first run + 2,189-event resume; 0 duplicates; generation 5 |
+| Main store | **2,710 events**; 14 alerts; 0 gaps |
+| Clean start | 50-event first run + 2,660-event resume; 0 duplicates; generation 8 |
 | Host verify | 0 schema errors |
-| Host replay | 8 live / 8 replay, matches |
-| Capture | 2,317 XML files on the SATA result volume |
-| Installed task before reboot | 143 events; bookmark record 143, generation 2; Running |
-| Installed task after reboot | 414 events at check (419 final); bookmark record 417; Running |
-| Continuity | +271 events at check (+276 final); same incarnation `0ddc986c-0fed-4799-8c0c-f11391251316` |
+| Host replay | 14 live / 14 replay, matches |
+| Capture | 2,972 XML files on the SATA result volume |
+| Installed task before reboot | 12 events; bookmark record 12, generation 2; Running |
+| Installed task after reboot | 308 events at check (310 final); bookmark record 308; Running |
+| Continuity | +296 events at check (+298 final); same incarnation `5a960400-001a-461a-b8fc-d862f38eb07a` |
 | Resume task last result | `267009` (task running) |
 | Installed verify after reboot | 0 schema errors |
-| Teardown | channel ACL, user rights, reader, task, and install restored/removed |
+| Teardown | channel ACL, user rights, reader, agent task, resume task, and install restored/removed |
 | Final harness result | **`ok:true`** |
 
-The main store was cleared before the run, so the 2,239 events are from one
+The main store was cleared before the run, so the 2,710 events are from one
 clean enrollment rather than a retained database. `main-result.json` is the
 pre-reboot snapshot and intentionally has `ok:false`; the authoritative final
-result is `result.json` from the resume phase.
+result is `result.json` from the resume phase. The installed database grew by
+two more rows between the 308-event continuation check and teardown, while the
+agent was still running before removal; the continuity assertions use the
+308-event checkpoint.
 
 ## Evidence
 
 | Artifact | SHA-256 |
 |---|---|
-| Final result JSON (`vm/results-v02-reboot/result.json`) | `a5c2ea9555587b80eb3514a1b2938c86a0ff36470c43916c4556dadaa5b6982f` |
-| Main database (`vm/results-v02-reboot/DATA/SENTINEL.DB`) | `43bb5d27a7744e624705af842e80838c98061b663eaf0ddcc6cf37089784f5f3` |
-| Installed-task database (`vm/results-v02-reboot/DATA/installed.db`) | `36381b4c6095dac9074feed5f55e06d0214320759c85dc653d141230443741c6` |
-| Pre-reboot main snapshot (`vm/results-v02-reboot/main-result.json`) | `e3e0b996c7813b0d1ed9dc2c038370540a97ff0c9d4f15e50953a36008988aac` |
-| Pre-reboot state (`vm/results-v02-reboot/reboot-state.json`) | `f36b91209d8714a0236cb691805a78bd5134c1d296b5e14d7a9fe3755a7d8e0f` |
-| Capture manifest (`vm/results-v02-reboot/CAPTURE/fixture.json`) | `0dfb50d1392ee2d0c6a026dd6eee3a04594c6a793daa4a18c111572fce95d306` |
-| Test ISO | `1e3b8d07ff92f9001ab9619106324dbe1248f1f1ad48bba2afde1d2bbfc0d023` |
-| `sentinelctl` binary | `9aac8265b33612b249a62f1e67d2462e96cee08e59bc1e03193ee9fee292031a` |
-| `sentinel-agent` binary | `85e1fbc9ca5a2b15ce26e514df81cd0ed97332ed50014e2b6de35367d525dc77` |
+| Final result JSON (`vm/results-v02-reboot2/result.json`) | `f96d6d98814fd0a40dd9acb227f74fa98ee9083616201586911310e548baae03` |
+| Main database (`vm/results-v02-reboot2/DATA/SENTINEL.DB`) | `6311a025df0313656e44ed93a4f1512926d8eed194d7843e54eadcb93f6198e2` |
+| Installed-task database (`vm/results-v02-reboot2/DATA/installed.db`) | `afe0146e0ea1ef1a31f76760fda980ac2bb50c3c390878145b267d712f2f1f0c` |
+| Pre-reboot main snapshot (`vm/results-v02-reboot2/main-result.json`) | `1fdd4d32714d2bfd9b231995f8727f67e953b97fe8a1e2bdf87273971c587507` |
+| Pre-reboot state (`vm/results-v02-reboot2/reboot-state.json`) | `d7842b9e378834c627c57fd17262883872927764286110ee0af4ae2cca56a7e2` |
+| Capture manifest (`vm/results-v02-reboot2/CAPTURE/fixture.json`) | `7098886dd380b13224fbc82080427154c204c048c669510cd57f0a211f874d31` |
+| Test ISO | `76165560236b46f0522b8b99f1edeee07a6103d22e6d48696a71a0ac6d37be64` |
+| `sentinelctl` binary | `632ec4e749e7543b4d65c3f03db309403a87390cdb3a0a20f25b3668067713f6` |
+| `sentinel-agent` binary | `e257fa9af83a4d0164e3c73b358ba6edd81853c60787a8254d9a9b43bddc750e` |
 | Sysmon profile | `da778a7639ab26df80924c24c79930e5df1fbde6d3716b462979995abd6a6949` |
 
 The result directories and test media are intentionally ignored by Git.
@@ -76,9 +79,10 @@ The result directories and test media are intentionally ignored by Git.
 - The resumed check waits for task running plus event growth; it does not yet
   assert exact losslessness against the Event Log's record IDs beyond the
   bookmark and schema verification.
-- `SentinelResume` remains registered in the disposable VM; the VM shuts down
-  after the check. A production lifecycle must remove it or use a one-shot
-  self-deleting continuation.
+- `SentinelResume` unregisters itself at the start of the continuation run;
+  the final result records `resume_task_removed:true`. The continuation still
+  needs an operator- or policy-created startup task for a real reboot, and the
+  harness verifies removal only on this disposable image.
 - The continuation runs as SYSTEM, not under the reader account; it is a test
   driver, not part of the installed agent.
 - The installed agent still stores the reader password and depends on the local

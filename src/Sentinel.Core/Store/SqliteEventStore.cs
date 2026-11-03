@@ -5,14 +5,16 @@ using Sentinel.Core.Model;
 
 namespace Sentinel.Core.Store;
 
+public sealed record StoreCounts(long Events, long Alerts, long Gaps);
+
 public sealed class SqliteEventStore : IDisposable
 {
     private readonly SqliteConnection _connection;
 
-    public SqliteEventStore(string databasePath)
+    public SqliteEventStore(string databasePath, bool readOnly = false)
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(databasePath));
-        if (!string.IsNullOrEmpty(directory))
+        if (!string.IsNullOrEmpty(directory) && !readOnly)
         {
             Directory.CreateDirectory(directory);
         }
@@ -20,10 +22,15 @@ public sealed class SqliteEventStore : IDisposable
         _connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = databasePath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
+            Mode = readOnly ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWriteCreate,
             Pooling = false
         }.ToString());
         _connection.Open();
+        if (readOnly)
+        {
+            return;
+        }
+
         using var command = _connection.CreateCommand();
         command.CommandText = "PRAGMA foreign_keys = ON; PRAGMA journal_mode = DELETE;";
         command.ExecuteNonQuery();
@@ -179,9 +186,10 @@ public sealed class SqliteEventStore : IDisposable
         return command.ExecuteScalar() as string;
     }
 
-    public Bookmark? GetBookmark(string sourceId)
+    public Bookmark? GetBookmark(string sourceId, SqliteTransaction? transaction = null)
     {
         using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             SELECT source_id, incarnation_id, config_generation, event_record_id,
                    coverage_start_record_id, sensor_sequence, updated_at, bookmark_xml
@@ -352,6 +360,34 @@ public sealed class SqliteEventStore : IDisposable
         }
 
         return events;
+    }
+
+    public StoreCounts GetCounts(SqliteTransaction? transaction = null)
+    {
+        using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT
+                (SELECT COUNT(*) FROM events),
+                (SELECT COUNT(*) FROM alerts),
+                (SELECT COUNT(*) FROM gaps);
+            """;
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return new StoreCounts(0, 0, 0);
+        }
+
+        return new StoreCounts(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2));
+    }
+
+    public (StoreCounts Counts, Bookmark? Bookmark) GetStatus(string sourceId)
+    {
+        using var transaction = _connection.BeginTransaction();
+        var counts = GetCounts(transaction);
+        var bookmark = GetBookmark(sourceId, transaction);
+        transaction.Commit();
+        return (counts, bookmark);
     }
 
     public IReadOnlyList<StoredAlert> ReadAlerts()
