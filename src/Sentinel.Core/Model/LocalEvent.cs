@@ -93,7 +93,8 @@ public sealed record LocalEvent(
     ProcessContext? Process,
     NetworkContext? Network,
     string? HostName,
-    string? UserName)
+    string? UserName,
+    DateTimeOffset? RawPurgedAt = null)
 {
     public string SourceKey => Source.SourceKey(SensorId);
 }

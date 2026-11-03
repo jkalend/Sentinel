@@ -88,6 +88,7 @@ public sealed class SqliteEventStore : IDisposable
                 unmapped_json TEXT NOT NULL,
                 raw_xml TEXT NOT NULL,
                 raw_sha256 TEXT NOT NULL,
+                raw_purged_at TEXT NULL,
                 gap_id TEXT NULL,
                 host_name TEXT NULL,
                 user_name TEXT NULL,
@@ -138,6 +139,30 @@ public sealed class SqliteEventStore : IDisposable
                 noted_at TEXT NOT NULL,
                 details TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS retention_purges (
+                purge_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                policy_json TEXT NOT NULL,
+                policy_sha256 TEXT NOT NULL,
+                data_events_deleted INTEGER NOT NULL,
+                source_health_deleted INTEGER NOT NULL,
+                raw_xml_purged INTEGER NOT NULL,
+                alerts_deleted INTEGER NOT NULL,
+                gaps_deleted INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS purged_ranges (
+                purge_id TEXT PRIMARY KEY,
+                first_sequence INTEGER NOT NULL,
+                last_sequence INTEGER NOT NULL,
+                event_count INTEGER NOT NULL,
+                first_time TEXT NOT NULL,
+                last_time TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_purged_ranges_sequence
+                ON purged_ranges(first_sequence, last_sequence);
             """;
 
         using var command = _connection.CreateCommand();
@@ -146,6 +171,7 @@ public sealed class SqliteEventStore : IDisposable
 
         EnsureColumn("bookmarks", "bookmark_xml", "TEXT NULL");
         EnsureColumn("events", "network_outcome", "TEXT NULL");
+        EnsureColumn("events", "raw_purged_at", "TEXT NULL");
         SetMetaIfMissing("contract_version", SentinelVersions.ContractVersion);
         SetMetaIfMissing("ocsf_version", SentinelVersions.OcsfVersion);
         SetMetaIfMissing("engine_version", SentinelVersions.EngineVersion);
@@ -435,6 +461,247 @@ public sealed class SqliteEventStore : IDisposable
         return gaps;
     }
 
+    public RetentionReport Purge(RetentionPolicy policy, DateTimeOffset? now = null, bool apply = true)
+    {
+        policy.Validate();
+        var at = (now ?? DateTimeOffset.UtcNow).ToUniversalTime();
+        var eventCutoff = at.AddDays(-policy.EventDays);
+        var rawCutoff = at.AddDays(-policy.RawDays);
+        var alertCutoff = at.AddDays(-policy.AlertDays);
+        var healthCutoff = at.AddDays(-policy.SourceHealthDays);
+        var gapCutoff = at.AddDays(-policy.GapDays);
+        var purgeId = Guid.NewGuid().ToString("D");
+
+        using var transaction = _connection.BeginTransaction();
+        var before = GetCounts(transaction);
+        var latestSequence = ScalarInt64(transaction, "SELECT COALESCE(MAX(sensor_sequence), 0) FROM events;");
+        var keepFrom = Math.Max(1, latestSequence - policy.KeepEvents + 1);
+        var sizeBoundary = policy.MaxBytes > 0
+            ? SizeBoundary(transaction, policy.MaxBytes, rawCutoff)
+            : 0;
+
+        var data = ReadDeleteStats(
+            transaction,
+            "record_kind = 'Data'",
+            eventCutoff,
+            keepFrom,
+            sizeBoundary);
+        var healthDeleted = Count(
+            transaction,
+            "SELECT COUNT(*) FROM events WHERE record_kind = 'SourceHealth' AND time_utc < $cutoff AND sensor_sequence < $keep_from;",
+            healthCutoff,
+            keepFrom);
+        var alertsDeleted = Count(
+            transaction,
+            "SELECT COUNT(*) FROM alerts WHERE created_at < $cutoff;",
+            alertCutoff,
+            keepFrom: null);
+        var gapsDeleted = Count(
+            transaction,
+            "SELECT COUNT(*) FROM gaps WHERE noted_at < $cutoff;",
+            gapCutoff,
+            keepFrom: null);
+
+        using (var command = _connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO retention_purges
+                    (purge_id, created_at, policy_json, policy_sha256,
+                     data_events_deleted, source_health_deleted, raw_xml_purged,
+                     alerts_deleted, gaps_deleted)
+                VALUES
+                    ($purge_id, $created_at, $policy_json, $policy_sha256,
+                     $data_events_deleted, $source_health_deleted, 0,
+                     $alerts_deleted, $gaps_deleted);
+                """;
+            command.Parameters.AddWithValue("$purge_id", purgeId);
+            command.Parameters.AddWithValue("$created_at", Timestamp(at));
+            command.Parameters.AddWithValue("$policy_json", policy.CanonicalJson());
+            command.Parameters.AddWithValue("$policy_sha256", policy.Sha256());
+            command.Parameters.AddWithValue("$data_events_deleted", data.Count);
+            command.Parameters.AddWithValue("$source_health_deleted", healthDeleted);
+            command.Parameters.AddWithValue("$alerts_deleted", alertsDeleted);
+            command.Parameters.AddWithValue("$gaps_deleted", gapsDeleted);
+            command.ExecuteNonQuery();
+        }
+
+        PurgedRange? range = null;
+        if (data.Count > 0)
+        {
+            range = new PurgedRange(purgeId, data.FirstSequence, data.LastSequence, data.Count, data.FirstTime, data.LastTime);
+            using var command = _connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO purged_ranges
+                    (purge_id, first_sequence, last_sequence, event_count, first_time, last_time)
+                VALUES
+                    ($purge_id, $first_sequence, $last_sequence, $event_count, $first_time, $last_time);
+                """;
+            command.Parameters.AddWithValue("$purge_id", range.PurgeId);
+            command.Parameters.AddWithValue("$first_sequence", range.FirstSequence);
+            command.Parameters.AddWithValue("$last_sequence", range.LastSequence);
+            command.Parameters.AddWithValue("$event_count", range.EventCount);
+            command.Parameters.AddWithValue("$first_time", Timestamp(range.FirstTime));
+            command.Parameters.AddWithValue("$last_time", Timestamp(range.LastTime));
+            command.ExecuteNonQuery();
+        }
+
+        var deletedData = DeleteData(
+            transaction,
+            eventCutoff,
+            keepFrom,
+            sizeBoundary);
+        var deletedHealth = Delete(
+            transaction,
+            "DELETE FROM events WHERE record_kind = 'SourceHealth' AND time_utc < $cutoff AND sensor_sequence < $keep_from;",
+            healthCutoff,
+            keepFrom);
+
+        long rawPurged;
+        using (var command = _connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                UPDATE events
+                SET raw_xml = '', raw_purged_at = $at
+                WHERE raw_purged_at IS NULL
+                  AND raw_xml <> ''
+                  AND time_utc < $cutoff;
+                """;
+            command.Parameters.AddWithValue("$at", Timestamp(at));
+            command.Parameters.AddWithValue("$cutoff", Timestamp(rawCutoff));
+            rawPurged = command.ExecuteNonQuery();
+        }
+
+        using (var command = _connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = "UPDATE retention_purges SET raw_xml_purged = $raw WHERE purge_id = $purge_id;";
+            command.Parameters.AddWithValue("$raw", rawPurged);
+            command.Parameters.AddWithValue("$purge_id", purgeId);
+            command.ExecuteNonQuery();
+        }
+
+        var deletedAlerts = Delete(
+            transaction,
+            "DELETE FROM alerts WHERE created_at < $cutoff;",
+            alertCutoff,
+            keepFrom: null);
+        var deletedGaps = Delete(
+            transaction,
+            "DELETE FROM gaps WHERE noted_at < $cutoff;",
+            gapCutoff,
+            keepFrom: null);
+        var retainedBytes = SumBytes(transaction);
+        var overLimit = policy.MaxBytes > 0 && retainedBytes > policy.MaxBytes;
+
+        var after = GetCounts(transaction);
+        if (apply)
+        {
+            transaction.Commit();
+        }
+        else
+        {
+            transaction.Rollback();
+        }
+
+        return new RetentionReport(
+            purgeId,
+            apply,
+            at,
+            eventCutoff,
+            rawCutoff,
+            alertCutoff,
+            healthCutoff,
+            gapCutoff,
+            keepFrom,
+            before,
+            after,
+            deletedData,
+            deletedHealth,
+            rawPurged,
+            deletedAlerts,
+            deletedGaps,
+            retainedBytes,
+            overLimit,
+            range);
+    }
+
+    public IReadOnlyList<PurgedRange> ReadPurgedRanges()
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT purge_id, first_sequence, last_sequence, event_count, first_time, last_time
+            FROM purged_ranges ORDER BY first_sequence, purge_id;
+            """;
+        using var reader = command.ExecuteReader();
+        var ranges = new List<PurgedRange>();
+        while (reader.Read())
+        {
+            ranges.Add(new PurgedRange(
+                reader.GetString(0),
+                reader.GetInt64(1),
+                reader.GetInt64(2),
+                reader.GetInt64(3),
+                RetentionClock.Parse(reader.GetString(4)),
+                RetentionClock.Parse(reader.GetString(5))));
+        }
+
+        return ranges;
+    }
+
+    public IReadOnlyList<RetentionAudit> ReadRetentionAudits(int limit = 100)
+    {
+        if (limit < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(limit));
+        }
+
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT p.purge_id, p.created_at, p.policy_json, p.policy_sha256,
+                   p.data_events_deleted, p.source_health_deleted, p.raw_xml_purged,
+                   p.alerts_deleted, p.gaps_deleted,
+                   r.first_sequence, r.last_sequence, r.event_count, r.first_time, r.last_time
+            FROM retention_purges p
+            LEFT JOIN purged_ranges r ON r.purge_id = p.purge_id
+            ORDER BY p.created_at DESC, p.purge_id DESC
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = command.ExecuteReader();
+        var audits = new List<RetentionAudit>();
+        while (reader.Read())
+        {
+            PurgedRange? range = null;
+            if (!reader.IsDBNull(9))
+            {
+                range = new PurgedRange(
+                    reader.GetString(0),
+                    reader.GetInt64(9),
+                    reader.GetInt64(10),
+                    reader.GetInt64(11),
+                    RetentionClock.Parse(reader.GetString(12)),
+                    RetentionClock.Parse(reader.GetString(13)));
+            }
+
+            audits.Add(new RetentionAudit(
+                reader.GetString(0),
+                RetentionClock.Parse(reader.GetString(1)),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetInt64(4),
+                reader.GetInt64(5),
+                reader.GetInt64(6),
+                reader.GetInt64(7),
+                reader.GetInt64(8),
+                range));
+        }
+
+        return audits;
+    }
+
     public void SetSourceState(ChannelConfig config)
     {
         using var command = _connection.CreateCommand();
@@ -583,7 +850,10 @@ public sealed class SqliteEventStore : IDisposable
             process,
             network,
             reader.IsDBNull(reader.GetOrdinal("host_name")) ? null : reader.GetString(reader.GetOrdinal("host_name")),
-            reader.IsDBNull(reader.GetOrdinal("user_name")) ? null : reader.GetString(reader.GetOrdinal("user_name")));
+            reader.IsDBNull(reader.GetOrdinal("user_name")) ? null : reader.GetString(reader.GetOrdinal("user_name")),
+            reader.IsDBNull(reader.GetOrdinal("raw_purged_at"))
+                ? null
+                : DateTimeOffset.Parse(reader.GetString(reader.GetOrdinal("raw_purged_at")), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind));
     }
 
     private static void AddEventParameters(SqliteCommand command, LocalEvent value)
@@ -635,6 +905,134 @@ public sealed class SqliteEventStore : IDisposable
         command.Parameters.AddWithValue("$dst_hostname", (object?)value.Network?.DestinationHostname ?? DBNull.Value);
     }
 
+    private sealed record DeleteStats(long Count, long FirstSequence, long LastSequence, DateTimeOffset FirstTime, DateTimeOffset LastTime);
+
+    private DeleteStats ReadDeleteStats(
+        SqliteTransaction transaction,
+        string kindPredicate,
+        DateTimeOffset cutoff,
+        long keepFrom,
+        long sizeBoundary)
+    {
+        using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = $"""
+            SELECT COUNT(*), COALESCE(MIN(sensor_sequence), 0), COALESCE(MAX(sensor_sequence), 0),
+                   MIN(time_utc), MAX(time_utc)
+            FROM events
+            WHERE {kindPredicate}
+              AND sensor_sequence < $keep_from
+              AND (time_utc < $cutoff OR ($size_boundary > 0 AND sensor_sequence <= $size_boundary));
+            """;
+        command.Parameters.AddWithValue("$cutoff", Timestamp(cutoff));
+        command.Parameters.AddWithValue("$keep_from", keepFrom);
+        command.Parameters.AddWithValue("$size_boundary", sizeBoundary);
+        using var reader = command.ExecuteReader();
+        reader.Read();
+        var count = reader.GetInt64(0);
+        if (count == 0)
+        {
+            return new DeleteStats(0, 0, 0, cutoff, cutoff);
+        }
+
+        return new DeleteStats(
+            count,
+            reader.GetInt64(1),
+            reader.GetInt64(2),
+            RetentionClock.Parse(reader.GetString(3)),
+            RetentionClock.Parse(reader.GetString(4)));
+    }
+
+    private long Count(SqliteTransaction transaction, string sql, DateTimeOffset cutoff, long? keepFrom)
+    {
+        using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$cutoff", Timestamp(cutoff));
+        if (keepFrom.HasValue)
+        {
+            command.Parameters.AddWithValue("$keep_from", keepFrom.Value);
+        }
+
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    private long Delete(SqliteTransaction transaction, string sql, DateTimeOffset cutoff, long? keepFrom)
+    {
+        using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$cutoff", Timestamp(cutoff));
+        if (keepFrom.HasValue)
+        {
+            command.Parameters.AddWithValue("$keep_from", keepFrom.Value);
+        }
+
+        return command.ExecuteNonQuery();
+    }
+
+    private long DeleteData(SqliteTransaction transaction, DateTimeOffset cutoff, long keepFrom, long sizeBoundary)
+    {
+        using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            DELETE FROM events
+            WHERE record_kind = 'Data'
+              AND sensor_sequence < $keep_from
+              AND (time_utc < $cutoff OR ($size_boundary > 0 AND sensor_sequence <= $size_boundary));
+            """;
+        command.Parameters.AddWithValue("$cutoff", Timestamp(cutoff));
+        command.Parameters.AddWithValue("$keep_from", keepFrom);
+        command.Parameters.AddWithValue("$size_boundary", sizeBoundary);
+        return command.ExecuteNonQuery();
+    }
+
+    private long SizeBoundary(SqliteTransaction transaction, long maxBytes, DateTimeOffset rawCutoff)
+    {
+        using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = $"""
+            WITH sized AS (
+                SELECT sensor_sequence,
+                       (length(CASE WHEN raw_purged_at IS NULL AND time_utc < $raw_cutoff THEN '' ELSE raw_xml END)
+                        + COALESCE(length(ocsf_json), 0)
+                        + length(unmapped_json)
+                        + COALESCE(length(process_cmd_line), 0)
+                        + COALESCE(length(parent_cmd_line), 0)
+                        + 256) AS bytes
+                FROM events
+                WHERE record_kind = 'Data'
+            ),
+            cumulative AS (
+                SELECT sensor_sequence,
+                       SUM(bytes) OVER (ORDER BY sensor_sequence DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS total
+                FROM sized
+            )
+            SELECT COALESCE(MAX(sensor_sequence), 0)
+            FROM cumulative
+            WHERE total > $max_bytes;
+            """;
+        command.Parameters.AddWithValue("$max_bytes", maxBytes);
+        command.Parameters.AddWithValue("$raw_cutoff", Timestamp(rawCutoff));
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    private long SumBytes(SqliteTransaction transaction)
+    {
+        using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = $"SELECT COALESCE(SUM({EventBytesSql}), 0) FROM events WHERE record_kind = 'Data';";
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    private long ScalarInt64(SqliteTransaction transaction, string sql)
+    {
+        using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
     private void SetMetaIfMissing(string key, string value)
     {
         if (GetMeta(key) is null)
@@ -677,6 +1075,15 @@ public sealed class SqliteEventStore : IDisposable
 
     private static string Timestamp(DateTimeOffset value) =>
         value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
+
+    private const string EventBytesSql = """
+        (length(raw_xml)
+         + COALESCE(length(ocsf_json), 0)
+         + length(unmapped_json)
+         + COALESCE(length(process_cmd_line), 0)
+         + COALESCE(length(parent_cmd_line), 0)
+         + 256)
+        """;
 
     private const string InsertEventSql = """
         INSERT INTO events (

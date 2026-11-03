@@ -2,7 +2,7 @@
 
 ## Slice status
 
-The first bounded slice, clean store plus reboot-resume, passed on 2026-11-03; see [V0.2 reboot-resume validation](v02-reboot-resume.md). Retention/backup is the next implementation slice.
+The first bounded slice, clean store plus reboot-resume, passed on 2026-11-03; see [V0.2 reboot-resume validation](v02-reboot-resume.md). The retention/backup first implementation passed fixture/host checks on 2026-11-04; see [retention/backup validation](v02-retention-backup.md). Size-cap physical compaction, crash-injection restore, and live-store purge remain open.
 
 V0.1 is a single-host, local-store, file-rule slice. These notes define the
 next bounded problems; they do not add fleet management, retention, or rule

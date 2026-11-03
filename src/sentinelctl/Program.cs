@@ -42,6 +42,18 @@ try
         case "status":
             Status(options);
             break;
+        case "purge":
+            Purge(options);
+            break;
+        case "purges":
+            Purges(options);
+            break;
+        case "backup":
+            Backup(options);
+            break;
+        case "restore":
+            Restore(options);
+            break;
         case "verify":
             exitCode = Verify(options);
             break;
@@ -111,7 +123,7 @@ static void Timeline(Dictionary<string, string?> options)
 {
     using var store = OpenStore(options);
     store.Initialize();
-    Console.Write(TimelineBuilder.Render(store.ReadEvents()));
+    Console.Write(TimelineBuilder.Render(store.ReadEvents(), store.ReadPurgedRanges()));
 }
 
 static void Replay(Dictionary<string, string?> options)
@@ -186,6 +198,101 @@ static void Status(Dictionary<string, string?> options)
     Console.WriteLine($"bookmark: incarnation={bookmark.IncarnationId} record={bookmark.EventRecordId} generation={bookmark.ConfigGeneration} coverage_start={coverageStart}");
 }
 
+static void Purge(Dictionary<string, string?> options)
+{
+    var policy = new RetentionPolicy(
+        Integer(options, "event-days", 30),
+        Integer(options, "raw-days", 7),
+        Integer(options, "alert-days", 90),
+        Integer(options, "health-days", 90),
+        Integer(options, "gap-days", 90),
+        Integer(options, "keep-events", 1000),
+        Long(options, "max-bytes", 10L * 1024 * 1024 * 1024));
+    var now = Get(options, "now") is { } text
+        ? DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
+        : DateTimeOffset.UtcNow;
+    var apply = options.ContainsKey("apply");
+
+    using var store = OpenStore(options);
+    store.Initialize();
+    var report = store.Purge(policy, now, apply);
+    Console.WriteLine($"mode: {(apply ? "apply" : "dry-run")}");
+    Console.WriteLine($"policy: {policy.CanonicalJson()}");
+    Console.WriteLine($"policy_sha256: {policy.Sha256()}");
+    Console.WriteLine($"keep_from_sequence: {report.KeepFromSequence}");
+    Console.WriteLine($"event_cutoff: {report.EventCutoff:O}");
+    Console.WriteLine($"raw_cutoff: {report.RawCutoff:O}");
+    Console.WriteLine($"alert_cutoff: {report.AlertCutoff:O}");
+    Console.WriteLine($"health_cutoff: {report.SourceHealthCutoff:O}");
+    Console.WriteLine($"gap_cutoff: {report.GapCutoff:O}");
+    Console.WriteLine($"before: events={report.Before.Events} alerts={report.Before.Alerts} gaps={report.Before.Gaps}");
+    Console.WriteLine($"after: events={report.After.Events} alerts={report.After.Alerts} gaps={report.After.Gaps}");
+    Console.WriteLine($"data_events_deleted: {report.DataEventsDeleted}");
+    Console.WriteLine($"source_health_deleted: {report.SourceHealthDeleted}");
+    Console.WriteLine($"raw_xml_purged: {report.RawXmlPurged}");
+    Console.WriteLine($"alerts_deleted: {report.AlertsDeleted}");
+    Console.WriteLine($"gaps_deleted: {report.GapsDeleted}");
+    Console.WriteLine($"retained_bytes: {report.RetainedBytes}");
+    Console.WriteLine($"over_limit: {report.OverLimit.ToString().ToLowerInvariant()}");
+    if (report.Range is not null)
+    {
+        Console.WriteLine($"purged_range: {report.Range.FirstSequence}-{report.Range.LastSequence} ({report.Range.EventCount} events)");
+    }
+}
+
+static void Purges(Dictionary<string, string?> options)
+{
+    using var store = OpenStore(options);
+    store.Initialize();
+    var audits = store.ReadRetentionAudits(Integer(options, "limit", 100));
+    Console.WriteLine($"purges: {audits.Count}");
+    foreach (var audit in audits)
+    {
+        var range = audit.Range is null
+            ? string.Empty
+            : $" range={audit.Range.FirstSequence}-{audit.Range.LastSequence}";
+        Console.WriteLine(
+            $"{audit.CreatedAt:O} {audit.PurgeId} data={audit.DataEventsDeleted} " +
+            $"health={audit.SourceHealthDeleted} raw={audit.RawXmlPurged} " +
+            $"alerts={audit.AlertsDeleted} gaps={audit.GapsDeleted}{range} " +
+            $"policy_sha256={audit.PolicySha256}");
+    }
+}
+
+static void Backup(Dictionary<string, string?> options)
+{
+    var databasePath = Get(options, "db") ?? "data/sentinel.db";
+    var output = Get(options, "output")
+        ?? throw new ArgumentException("--output is required.");
+    var report = BackupService.Create(databasePath, output);
+    Console.WriteLine($"backup: {report.BackupPath}");
+    Console.WriteLine($"manifest: {report.ManifestPath}");
+    Console.WriteLine($"sha256: {report.Manifest.DatabaseSha256}");
+    Console.WriteLine($"bytes: {report.Manifest.DatabaseBytes}");
+    Console.WriteLine($"events: {report.Manifest.Counts.Events}");
+    Console.WriteLine($"alerts: {report.Manifest.Counts.Alerts}");
+    Console.WriteLine($"gaps: {report.Manifest.Counts.Gaps}");
+    if (report.Manifest.BookmarkSource is not null)
+    {
+        Console.WriteLine(
+            $"bookmark: incarnation={report.Manifest.BookmarkIncarnation} " +
+            $"record={report.Manifest.BookmarkRecordId} " +
+            $"coverage_start={report.Manifest.BookmarkCoverageStart?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}");
+    }
+}
+
+static void Restore(Dictionary<string, string?> options)
+{
+    var backupPath = Get(options, "backup")
+        ?? throw new ArgumentException("--backup is required.");
+    var databasePath = Get(options, "db") ?? "data/sentinel.db";
+    var report = BackupService.Restore(backupPath, databasePath);
+    Console.WriteLine($"restored: {report.DatabasePath}");
+    Console.WriteLine($"from: {report.BackupPath}");
+    Console.WriteLine($"sha256: {report.Manifest.DatabaseSha256}");
+    Console.WriteLine($"events: {report.Manifest.Counts.Events}");
+}
+
 static int Verify(Dictionary<string, string?> options)
 {
     var schemaRoot = ResolveSchemaRoot(Get(options, "schema"));
@@ -193,6 +300,7 @@ static int Verify(Dictionary<string, string?> options)
     using var store = OpenStore(options);
     store.Initialize();
     var errors = new List<string>();
+    var rawPurged = 0;
     foreach (var value in store.ReadEvents())
     {
         if (value.ContractVersion != SentinelVersions.ContractVersion)
@@ -200,10 +308,21 @@ static int Verify(Dictionary<string, string?> options)
             errors.Add($"{value.SourceKey}: contract_version '{value.ContractVersion}'.");
         }
 
-        var recomputed = IngestionService.Sha256Hex(value.RawXml);
-        if (!string.Equals(recomputed, value.RawSha256, StringComparison.Ordinal))
+        if (value.RawPurgedAt is not null)
         {
-            errors.Add($"{value.SourceKey}: raw_sha256 does not match raw_xml.");
+            rawPurged++;
+            if (value.RawXml.Length != 0)
+            {
+                errors.Add($"{value.SourceKey}: raw_xml is present after raw_purged_at.");
+            }
+        }
+        else
+        {
+            var recomputed = IngestionService.Sha256Hex(value.RawXml);
+            if (!string.Equals(recomputed, value.RawSha256, StringComparison.Ordinal))
+            {
+                errors.Add($"{value.SourceKey}: raw_sha256 does not match raw_xml.");
+            }
         }
 
         if (value.Kind != RecordKind.Data || value.OcsfJson is null)
@@ -234,6 +353,7 @@ static int Verify(Dictionary<string, string?> options)
     }
 
     Console.WriteLine($"schema: {schemaRoot}");
+    Console.WriteLine($"raw_purged: {rawPurged}");
     Console.WriteLine($"errors: {errors.Count}");
     foreach (var error in errors)
     {
@@ -307,6 +427,32 @@ static Dictionary<string, string?> ParseOptions(string[] args)
 static string? Get(Dictionary<string, string?> options, string key) =>
     options.TryGetValue(key, out var value) ? value : null;
 
+static int Integer(Dictionary<string, string?> options, string key, int defaultValue)
+{
+    var text = Get(options, key);
+    if (text is null)
+    {
+        return defaultValue;
+    }
+
+    return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+        ? value
+        : throw new ArgumentException($"--{key} must be an integer.");
+}
+
+static long Long(Dictionary<string, string?> options, string key, long defaultValue)
+{
+    var text = Get(options, key);
+    if (text is null)
+    {
+        return defaultValue;
+    }
+
+    return long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+        ? value
+        : throw new ArgumentException($"--{key} must be an integer.");
+}
+
 static void Usage()
 {
     Console.WriteLine("sentinelctl <command> [options]");
@@ -317,5 +463,11 @@ static void Usage()
     Console.WriteLine("  replay    [--db <path>] [--rules <dir>]");
     Console.WriteLine("  gaps      [--db <path>]");
     Console.WriteLine("  status    [--db <path>]");
+    Console.WriteLine("  purge     [--db <path>] [--event-days 30] [--raw-days 7] [--alert-days 90]");
+    Console.WriteLine("            [--health-days 90] [--gap-days 90] [--keep-events 1000] [--max-bytes 10737418240]");
+    Console.WriteLine("            [--now <iso>] [--apply]");
+    Console.WriteLine("  purges    [--db <path>] [--limit <n>]");
+    Console.WriteLine("  backup    --db <path> --output <path>");
+    Console.WriteLine("  restore   --backup <path> [--db <path>]");
     Console.WriteLine("  verify    [--db <path>] [--schema <dir>]");
 }
