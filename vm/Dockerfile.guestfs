@@ -1,0 +1,8 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libguestfs-tools ntfs-3g linux-image-amd64 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV LIBGUESTFS_BACKEND=direct
+WORKDIR /vm

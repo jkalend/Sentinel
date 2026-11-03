@@ -1,0 +1,18 @@
+id: sentinel.process.temp-executable
+version: 1
+title: Executable launched from a temporary or public directory
+status: experimental
+description: An executable image was launched from a user-writable temporary or public directory.
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    process.file.path:
+      contains_any:
+        - '\AppData\Local\Temp\'
+        - '\Windows\Temp\'
+        - '\Users\Public\'
+    process.file.name:
+      ends_with: '.exe'
+  condition: selection

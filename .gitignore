@@ -25,6 +25,14 @@ volumes/
 logs/
 *.log
 
+# VM build inputs and outputs
+vm/test-media/
+vm/*.iso
+vm/*.img
+vm/*.qcow2
+vm/results/
+vm/results-*/
+
 # Editors / OS
 .vs/
 .vscode/
@@ -32,3 +40,4 @@ logs/
 .DS_Store
 Thumbs.db
 desktop.ini
+coderabbit-*.txt

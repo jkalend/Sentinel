@@ -1,0 +1,25 @@
+id: sentinel.process.encoded-powershell
+version: 1
+title: PowerShell encoded command
+status: experimental
+description: A PowerShell process was launched with an encoded command argument.
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    process.name:
+      in:
+        - powershell.exe
+        - pwsh.exe
+    process.cmd_line:
+      contains_any:
+        - '-encodedcommand'
+        - '-enc '
+        - '-enco '
+        - '-ec '
+        - '-e '
+        - '/enc '
+        - '/ec '
+        - '/e '
+  condition: selection

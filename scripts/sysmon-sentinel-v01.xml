@@ -1,0 +1,13 @@
+<Sysmon schemaversion="4.90">
+  <!-- V0.1 source profile: process creation and network connections only.
+       Empty exclude filters include every event of that type; see the
+       Microsoft Sysmon configuration documentation. Review before applying. -->
+  <HashAlgorithms>SHA256</HashAlgorithms>
+  <EventFiltering>
+    <ProcessCreate onmatch="exclude" />
+    <NetworkConnect onmatch="exclude" />
+    <!-- An empty include filter logs nothing for that event type. Keep
+         ProcessTerminate out of the V0.1 profile; it is not a data event. -->
+    <ProcessTerminate onmatch="include" />
+  </EventFiltering>
+</Sysmon>

@@ -1,0 +1,26 @@
+id: sentinel.network.script-host-nonstandard-egress
+version: 2
+title: Script host outbound connection on a non-standard port
+status: experimental
+description: A script host opened an established outbound TCP connection to a port outside the allowlisted web/DNS ports.
+logsource:
+  category: network_connection
+  product: windows
+detection:
+  selection:
+    process.name:
+      in:
+        - powershell.exe
+        - pwsh.exe
+        - cmd.exe
+        - wscript.exe
+        - cscript.exe
+        - mshta.exe
+    network.activity_id:
+      equals: 1
+    network.dst.port:
+      not_in:
+        - 80
+        - 443
+        - 53
+  condition: selection
