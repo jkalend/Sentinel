@@ -1,5 +1,9 @@
 # Sentinel V0.2 design notes
 
+## Slice status
+
+The first bounded slice, clean store plus reboot-resume, passed on 2026-11-03; see [V0.2 reboot-resume validation](v02-reboot-resume.md). Retention/backup is the next implementation slice.
+
 V0.1 is a single-host, local-store, file-rule slice. These notes define the
 next bounded problems; they do not add fleet management, retention, or rule
 packaging to V0.1.

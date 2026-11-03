@@ -10,7 +10,7 @@
   raw XML, copies results to the SENTINELOUT FAT volume, writes a serial
   result, and shuts down. No manual OOBE or click-through is accepted.
 #>
-param([switch]$Continue)
+param([switch]$Continue, [switch]$Resume, [switch]$NoReboot)
 
 $ErrorActionPreference = 'Stop'
 $root = 'C:\sentinel'
@@ -44,6 +44,22 @@ function Limit-Text {
     if ($null -eq $Text) { return '' }
     if ($Text.Length -le $Max) { return $Text }
     return $Text.Substring(0, $Max) + '...[truncated]'
+}
+
+function Get-StatusValue {
+    param([string]$Text, [string]$Name)
+    if ($Text -match "(?m)^$([regex]::Escape($Name)):\s*(.+)$") {
+        return $Matches[1].Trim()
+    }
+    return ''
+}
+
+function Get-StatusNumber {
+    param([string]$Text, [string]$Name)
+    $value = Get-StatusValue -Text $Text -Name $Name
+    $parsed = 0
+    if ([int]::TryParse($value, [ref]$parsed)) { return $parsed }
+    return -1
 }
 
 function Invoke-Captured {
@@ -160,7 +176,7 @@ function Finish {
                 }
             }
 
-            foreach ($name in @('result.json', 'agent-run.txt', 'agent-run-first.txt', 'verify.txt', 'timeline.txt', 'replay.txt', 'probes.json', 'run.log', 'probes.out.txt', 'install.txt', 'uninstall.txt')) {
+            foreach ($name in @('result.json', 'main-result.json', 'reboot-state.json', 'agent-run.txt', 'agent-run-first.txt', 'verify.txt', 'timeline.txt', 'replay.txt', 'probes.json', 'run.log', 'probes.out.txt', 'install.txt', 'uninstall.txt')) {
                 $source = Join-Path $root $name
                 if (Test-Path -LiteralPath $source) {
                     Copy-Item -LiteralPath $source -Destination $destination -Force
@@ -184,6 +200,122 @@ function Finish {
     exit 0
 }
 
+function Invoke-Resume {
+    $result = [ordered]@{
+        ok = $false
+        stage = 'resume'
+        timestamp_utc = [DateTimeOffset]::UtcNow.ToString('O')
+        computer = $env:COMPUTERNAME
+        errors = @()
+    }
+
+    try {
+        $statePath = Join-Path $root 'reboot-state.json'
+        if (-not (Test-Path -LiteralPath $statePath)) {
+            throw "reboot state missing: $statePath"
+        }
+        $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        $installedRoot = [string]$state.installed_root
+        $installedDb = Join-Path $installedRoot 'data\sentinel.db'
+        $installedCtl = Join-Path $installedRoot 'ctl\sentinelctl.exe'
+        $installedSchema = Join-Path $installedRoot 'schemas\ocsf-1.9.0'
+        $preEvents = [int]$state.pre_events
+        $result.pre_events = $preEvents
+        $result.pre_bookmark = [string]$state.pre_bookmark
+        $result.pre_task_state = [string]$state.pre_task_state
+        $result.installer_before_reboot = [bool]$state.installer_ok
+
+        $taskState = 'missing'
+        $events = -1
+        $statusText = ''
+        $probeSent = $false
+        for ($attempt = 0; $attempt -lt 60; $attempt++) {
+            $task = Get-ScheduledTask -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
+            $taskState = if ($task) { $task.State.ToString() } else { 'missing' }
+            if (Test-Path -LiteralPath $installedDb) {
+                $statusResult = Invoke-Captured -FilePath $installedCtl -Arguments @('status', '--db', $installedDb)
+                $statusText = $statusResult.Output
+                $events = Get-StatusNumber -Text $statusText -Name 'events'
+            }
+            if ($taskState -eq 'Running' -and $events -gt $preEvents) {
+                break
+            }
+            if (-not $probeSent -and $attempt -ge 5) {
+                Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', 'echo reboot-resume-probe') -Wait | Out-Null
+                $probeSent = $true
+            }
+            Start-Sleep -Seconds 2
+        }
+
+        $result.resume_task_state = $taskState
+        $result.resume_events = $events
+        $result.resume_delta = $events - $preEvents
+        $result.resume_bookmark = Get-StatusValue -Text $statusText -Name 'bookmark'
+        $result.resume_status = Limit-Text $statusText
+        $taskDetails = Get-ScheduledTaskInfo -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
+        $result.resume_task_last_result = if ($taskDetails) { $taskDetails.LastTaskResult } else { $null }
+
+        Stop-ScheduledTask -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+
+        if (Test-Path -LiteralPath $installedDb) {
+            New-Item -ItemType Directory -Path (Join-Path $root 'data') -Force | Out-Null
+            Copy-Item -LiteralPath $installedDb -Destination (Join-Path $root 'data\installed.db') -Force
+        }
+
+        $verifyResult = Invoke-Captured -FilePath $installedCtl -Arguments @('verify', '--db', $installedDb, '--schema', $installedSchema)
+        $verifyExit = $verifyResult.ExitCode
+        $result.resume_verify_exit = $verifyExit
+        $result.resume_verify = Limit-Text $verifyResult.Output
+
+        $uninstallScript = Join-Path $root 'scripts\uninstall-sentinel-agent.ps1'
+        $uninstallResult = Invoke-Captured -FilePath 'powershell.exe' -Arguments @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $uninstallScript,
+            '-InstallRoot', $installedRoot, '-ReaderUser', 'sentinel-reader',
+            '-TaskName', 'SentinelAgent', '-RemoveReader', '-RemoveData', '-RemoveInstall'
+        )
+        $uninstallExit = $uninstallResult.ExitCode
+        $uninstallOutput = $uninstallResult.Output
+        $uninstallOutput | Set-Content -LiteralPath (Join-Path $root 'uninstall.txt') -Encoding UTF8
+        $result.resume_uninstall_exit = $uninstallExit
+        $result.resume_uninstall = Limit-Text $uninstallOutput
+
+        $uninstallJson = $null
+        try { $uninstallJson = $uninstallOutput | ConvertFrom-Json } catch { }
+        $channelAfter = (& wevtutil.exe gl 'Microsoft-Windows-Sysmon/Operational' 2>&1 | Select-String -Pattern '^\s*channelAccess:\s*' | Select-Object -First 1)
+        $channelAfterText = if ($channelAfter) { $channelAfter.ToString() } else { '' }
+        $channelAfterAcl = ($channelAfterText -replace '^\s*channelAccess:\s*', '').Trim()
+        $oldAcl = [string]$state.channel_acl_before
+        $uninstallRestored = ([bool]($uninstallJson -and $uninstallJson.channel_acl_restored) -and $oldAcl -ne '' -and $channelAfterAcl -eq $oldAcl)
+        $readerRemoved = -not [bool](Get-LocalUser -Name 'sentinel-reader' -ErrorAction SilentlyContinue)
+        $installRemoved = -not (Test-Path -LiteralPath $installedRoot)
+        $result.resume_uninstall_restored = $uninstallRestored
+        $result.resume_reader_removed = $readerRemoved
+        $result.resume_install_removed = $installRemoved
+
+        $result.resume_ok = (
+            $events -gt $preEvents -and
+            $taskState -eq 'Running' -and
+            $verifyExit -eq 0 -and
+            [bool]$state.installer_ok -and
+            $uninstallExit -eq 0 -and
+            $uninstallRestored -and
+            $readerRemoved -and
+            $installRemoved
+        )
+        $result.ok = $result.resume_ok
+    }
+    catch {
+        $result.ok = $false
+        $result.error = $_.Exception.Message
+        $result.stack = $_.ScriptStackTrace
+        Write-Log "resume failed: $($_.Exception.Message)"
+    }
+    finally {
+        Finish $result
+    }
+}
+
 $result = [ordered]@{
     ok = $false
     stage = 'start'
@@ -192,6 +324,11 @@ $result = [ordered]@{
     errors = @()
 }
 $rebootRequested = $false
+
+if ($Resume) {
+    Invoke-Resume
+    return
+}
 
 try {
     Copy-Media
@@ -490,6 +627,60 @@ try {
             finally {
                 Remove-LocalUser -Name 'sentinel-outsider' -ErrorAction SilentlyContinue
                 Remove-Item -LiteralPath $outsiderDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+
+            $preInstallerOk = (
+                $installExit -eq 0 -and
+                $installedTimelineExit -eq 0 -and
+                $installedVerifyExit -eq 0 -and
+                $installedEvents -gt 0 -and
+                $readerAclOk -and
+                $outsiderDenied
+            )
+
+            if (-not $NoReboot) {
+                $preStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $installedDb)
+                $preEvents = Get-StatusNumber -Text $preStatus.Output -Name 'events'
+                if ($preEvents -lt 0) { $preEvents = $installedEvents }
+                $preBookmark = Get-StatusValue -Text $preStatus.Output -Name 'bookmark'
+                $state = [ordered]@{
+                    pre_events = $preEvents
+                    pre_bookmark = $preBookmark
+                    pre_task_state = $taskState
+                    installed_root = $installedRoot
+                    installer_ok = $preInstallerOk
+                    channel_acl_before = if ($installData) { $installData.channel_acl_before } else { '' }
+                    reader_sid = $readerSid
+                    timestamp_utc = [DateTimeOffset]::UtcNow.ToString('O')
+                }
+                $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $root 'reboot-state.json') -Encoding UTF8
+
+                $resumeScript = Join-Path $root 'run-sentinel.ps1'
+                $resumeAction = New-ScheduledTaskAction `
+                    -Execute (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
+                    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$resumeScript`" -Resume" `
+                    -WorkingDirectory $root
+                $resumeTrigger = New-ScheduledTaskTrigger -AtStartup
+                $resumeSettings = New-ScheduledTaskSettingsSet `
+                    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                    -ExecutionTimeLimit (New-TimeSpan -Minutes 15) `
+                    -MultipleInstances IgnoreNew -StartWhenAvailable
+                $resumePrincipal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+                Register-ScheduledTask -TaskName 'SentinelResume' -Action $resumeAction -Trigger $resumeTrigger `
+                    -Settings $resumeSettings -Principal $resumePrincipal -Force | Out-Null
+
+                $result.reboot_resume = $true
+                $result.pre_events = $preEvents
+                $result.pre_bookmark = $preBookmark
+                $result.installer_before_reboot = $preInstallerOk
+                $result.resume_task_registered = $true
+                $result | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $root 'main-result.json') -Encoding UTF8
+                Write-Log "resume task registered; pre_events=$preEvents; rebooting"
+                Write-Serial 'SENTINEL_STAGE_RESUME_REBOOT'
+                $rebootRequested = $true
+                Start-Sleep -Seconds 2
+                shutdown.exe /r /t 5 /f
+                return
             }
 
             $uninstallResult = Invoke-Captured -FilePath 'powershell.exe' -Arguments @(

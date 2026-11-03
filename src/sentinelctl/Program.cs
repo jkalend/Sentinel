@@ -39,6 +39,9 @@ try
         case "gaps":
             Gaps(options);
             break;
+        case "status":
+            Status(options);
+            break;
         case "verify":
             exitCode = Verify(options);
             break;
@@ -157,6 +160,28 @@ static void Gaps(Dictionary<string, string?> options)
     {
         Console.WriteLine($"{gap.Kind} confidence={gap.Confidence} start={gap.StartRecordId?.ToString(CultureInfo.InvariantCulture) ?? "?"} end={gap.EndRecordId?.ToString(CultureInfo.InvariantCulture) ?? "?"} {gap.Details}");
     }
+}
+
+static void Status(Dictionary<string, string?> options)
+{
+    using var store = OpenStore(options);
+    store.Initialize();
+    var events = store.ReadEvents();
+    var alerts = store.ReadAlerts();
+    var gaps = store.ReadGaps();
+    var bookmark = store.GetBookmark(SysmonXmlReader.SysmonChannel);
+
+    Console.WriteLine($"events: {events.Count}");
+    Console.WriteLine($"alerts: {alerts.Count}");
+    Console.WriteLine($"gaps: {gaps.Count}");
+    if (bookmark is null)
+    {
+        Console.WriteLine("bookmark: none");
+        return;
+    }
+
+    var coverageStart = bookmark.CoverageStartRecordId?.ToString(CultureInfo.InvariantCulture) ?? "unknown";
+    Console.WriteLine($"bookmark: incarnation={bookmark.IncarnationId} record={bookmark.EventRecordId} generation={bookmark.ConfigGeneration} coverage_start={coverageStart}");
 }
 
 static int Verify(Dictionary<string, string?> options)
@@ -289,5 +314,6 @@ static void Usage()
     Console.WriteLine("  timeline  [--db <path>]");
     Console.WriteLine("  replay    [--db <path>] [--rules <dir>]");
     Console.WriteLine("  gaps      [--db <path>]");
+    Console.WriteLine("  status    [--db <path>]");
     Console.WriteLine("  verify    [--db <path>] [--schema <dir>]");
 }
