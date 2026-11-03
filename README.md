@@ -165,4 +165,6 @@ Bespoke enforcement — host firewall, antivirus, EDR containment, IDS/IPS, WAF,
 
 ## License
 
-Private. All rights reserved until a license is chosen.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+
+Copyright 2026 jkalend. Third-party dependencies retain their own licenses.
