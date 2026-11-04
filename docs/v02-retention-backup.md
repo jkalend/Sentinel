@@ -1,9 +1,10 @@
 # V0.2 retention and backup: first implementation
 
-**Status: fixture/host pass, 2026-11-04.** This slice adds age/size retention
-with tombstones and audited raw-XML purge, plus online SQLite backup and
-fail-closed restore. It is host-verified with the synthetic Sysmon fixture;
-it has not yet been exercised against a live VM or a multi-gigabyte store.
+**Status: fixture/host and live-store pass, 2026-11-04.** This slice adds
+age/size retention with tombstones and audited raw-XML purge, plus online
+SQLite backup and fail-closed restore. It is fixture/host-verified and was
+exercised against a running `sentinel-reader` task in the disposable VM;
+multi-gigabyte behavior is still unmeasured.
 
 ## Retention semantics
 
@@ -105,6 +106,36 @@ The exact-boundary test keeps an event whose timestamp equals the cutoff and
 deletes the one one second older. Dry-run and apply are separate assertions so
 a failed dry run cannot hide an accidental deletion.
 
+## Live store check
+
+The final disposable-VM run used a shortened 800-record main collection to
+keep the retention check bounded, then tested the installed task while it was
+running:
+
+| Check | Result |
+|---|---|
+| Installed task before retention | 118 events; Running; bookmark 118 |
+| Online backup while reader active | 119 events; 2 alerts; bookmark 119; 520,192 bytes; SHA-256 `259b3da5efacd696fa1f579897942a92e4a8315dd83d1c023b6dfeae600e2db5` |
+| Concurrent purge | 196→87 events; 109 data rows deleted; 87 raw payloads purged; 2 alerts preserved; same incarnation |
+| Agent continued appending | 139 events after purge |
+| Restore to separate DB | 119 events; manifest and restored hashes match |
+| Reboot/resume after retention | bookmark advanced 118→249; same incarnation; verify 0 schema errors; resume `ok:true` |
+| Final harness | `ok:true`, `main_ok:true`, `retention_ok:true`; teardown restored reader, tasks, ACL and user rights |
+
+Artifact hashes:
+
+| Artifact | SHA-256 |
+|---|---|
+| Final VM result | `5acf7aa42fcb3c6808034e50fd65753948a28c3cf72b173fd1ca10df90115a30` |
+| Pre-reboot main snapshot | `a522d37488b3c24e4e0624b65511ef2c9c65846d43d764cf7c74026628c3fc69` |
+| Backup database and restored copy | `259b3da5efacd696fa1f579897942a92e4a8315dd83d1c023b6dfeae600e2db5` |
+| Backup manifest | `5da5045825601f09502bccb9f6f37c0caee921a2a2ae15dc89f8c85211893a55` |
+
+The first live attempt exposed a harness assertion that compared post-purge
+counts without accounting for concurrent appends; the assertion was corrected
+and the final run passed. The product behavior in that first attempt already
+showed successful backup, purge, append continuation, and restore.
+
 ## Limits
 
 - The byte cap is a payload estimate and does not run `VACUUM`; use an operator
@@ -119,7 +150,8 @@ a failed dry run cannot hide an accidental deletion.
 - Restore is an offline replacement of the target file. It is fail-closed for
   hash, integrity, schema, and count mismatches, but there is no crash-injection
   test for a process kill between target rename steps.
-- The VM harness still exercises the clean-store/reboot path; this slice's
-  evidence is host fixture data with no live endpoint or multi-gigabyte test.
+- The live VM evidence uses a shortened 800-record collection and a synthetic
+  disposable endpoint; multi-gigabyte size, physical compaction, crash injection
+  between restore renames, and production retention periods remain unverified.
 - Redaction lists are not implemented; command lines remain evidence unless a
   future explicit redaction pass records its own audit.
