@@ -1,0 +1,43 @@
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+  <System>
+    <Provider Name="Microsoft-Windows-Sysmon" Guid="{5770385F-C22A-43E0-BF4C-06F5698FFBD9}"/>
+    <EventID>1</EventID>
+    <Version>5</Version>
+    <Level>4</Level>
+    <Task>1</Task>
+    <Opcode>0</Opcode>
+    <Keywords>0x8000000000000000</Keywords>
+    <TimeCreated SystemTime="2026-11-02T10:00:07.8000000Z"/>
+    <EventRecordID>1008</EventRecordID>
+    <Correlation/>
+    <Execution ProcessID="1234" ThreadID="5678"/>
+    <Channel>Microsoft-Windows-Sysmon/Operational</Channel>
+    <Computer>WS1</Computer>
+    <Security UserID="S-1-5-18"/>
+  </System>
+  <EventData>
+    <Data Name="RuleName">-</Data>
+    <Data Name="UtcTime">2026-11-02 10:00:07.800</Data>
+    <Data Name="ProcessGuid">{d4e5f6a7-4444-6444-0000-000000000008}</Data>
+    <Data Name="ProcessId">4242</Data>
+    <Data Name="Image">C:\Windows\System32\cmd.exe</Data>
+    <Data Name="FileVersion">10.0.26200.1</Data>
+    <Data Name="Description">Windows Command Processor</Data>
+    <Data Name="Product">Microsoft Windows Operating System</Data>
+    <Data Name="Company">Microsoft Corporation</Data>
+    <Data Name="OriginalFileName">Cmd.Exe</Data>
+    <Data Name="CommandLine">cmd.exe /c whoami</Data>
+    <Data Name="CurrentDirectory">C:\Windows\System32\</Data>
+    <Data Name="User">WS1\alice</Data>
+    <Data Name="LogonGuid">{a1b2c3d4-1111-6111-0000-0000000000aa}</Data>
+    <Data Name="LogonId">0x123456</Data>
+    <Data Name="TerminalSessionId">1</Data>
+    <Data Name="IntegrityLevel">Medium</Data>
+    <Data Name="Hashes">SHA1=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,MD5=cccccccccccccccccccccccccccccccc,SHA256=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd</Data>
+    <Data Name="ParentProcessGuid">{a1b2c3d4-1111-6111-0000-000000000002}</Data>
+    <Data Name="ParentProcessId">1000</Data>
+    <Data Name="ParentImage">C:\Windows\explorer.exe</Data>
+    <Data Name="ParentCommandLine">C:\Windows\explorer.exe</Data>
+    <Data Name="ParentUser">WS1\alice</Data>
+  </EventData>
+</Event>

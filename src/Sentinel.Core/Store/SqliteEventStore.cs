@@ -44,6 +44,16 @@ public sealed class SqliteEventStore : IDisposable
                 value TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS sensors (
+                sensor_id TEXT PRIMARY KEY,
+                host_id TEXT NOT NULL,
+                host_name TEXT NULL,
+                enrolled_at TEXT NOT NULL,
+                config_generation INTEGER NOT NULL,
+                clock_offset_ms INTEGER NOT NULL,
+                clock_uncertainty_ms INTEGER NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS bookmarks (
                 source_id TEXT PRIMARY KEY,
                 incarnation_id TEXT NOT NULL,
@@ -177,6 +187,110 @@ public sealed class SqliteEventStore : IDisposable
         SetMetaIfMissing("engine_version", SentinelVersions.EngineVersion);
         SetMetaIfMissing("journal_mode", "delete");
         SetMetaIfMissing("created_at", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        EnsureEnrollment();
+    }
+
+    public Enrollment Enroll(
+        string sensorId,
+        string hostId,
+        string? hostName = null,
+        int configGeneration = 1,
+        long clockOffsetMs = 0,
+        long clockUncertaintyMs = 0)
+    {
+        if (string.IsNullOrWhiteSpace(sensorId) || string.IsNullOrWhiteSpace(hostId))
+        {
+            throw new ArgumentException("sensor_id and host_id are required.");
+        }
+
+        if (configGeneration < 1 || clockUncertaintyMs < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sensorId), "Invalid enrollment values.");
+        }
+
+        var existing = GetEnrollment();
+        if (existing is not null &&
+            (!string.Equals(existing.SensorId, sensorId, StringComparison.OrdinalIgnoreCase) ||
+             !string.Equals(existing.HostId, hostId, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException(
+                $"database is enrolled as sensor '{existing.SensorId}' host '{existing.HostId}'.");
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO sensors
+                (sensor_id, host_id, host_name, enrolled_at, config_generation, clock_offset_ms, clock_uncertainty_ms)
+            VALUES
+                ($sensor_id, $host_id, $host_name, $enrolled_at, $config_generation, $clock_offset_ms, $clock_uncertainty_ms)
+            ON CONFLICT(sensor_id) DO UPDATE SET
+                host_name = COALESCE(excluded.host_name, sensors.host_name),
+                config_generation = excluded.config_generation,
+                clock_offset_ms = excluded.clock_offset_ms,
+                clock_uncertainty_ms = excluded.clock_uncertainty_ms;
+            """;
+        command.Parameters.AddWithValue("$sensor_id", sensorId);
+        command.Parameters.AddWithValue("$host_id", hostId);
+        command.Parameters.AddWithValue("$host_name", (object?)hostName ?? DBNull.Value);
+        command.Parameters.AddWithValue("$enrolled_at", Timestamp(now));
+        command.Parameters.AddWithValue("$config_generation", configGeneration);
+        command.Parameters.AddWithValue("$clock_offset_ms", clockOffsetMs);
+        command.Parameters.AddWithValue("$clock_uncertainty_ms", clockUncertaintyMs);
+        command.ExecuteNonQuery();
+        SetMeta("sensor_id", sensorId);
+        SetMeta("host_id", hostId);
+        return new Enrollment(sensorId, hostId, hostName, now, configGeneration, clockOffsetMs, clockUncertaintyMs);
+    }
+
+    public Enrollment? GetEnrollment()
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT sensor_id, host_id, host_name, enrolled_at, config_generation,
+                   clock_offset_ms, clock_uncertainty_ms
+            FROM sensors ORDER BY enrolled_at DESC LIMIT 1;
+            """;
+        using var reader = command.ExecuteReader();
+        if (reader.Read())
+        {
+            return new Enrollment(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                DateTimeOffset.Parse(reader.GetString(3), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                reader.GetInt32(4),
+                reader.GetInt64(5),
+                reader.GetInt64(6));
+        }
+
+        var sensor = GetMeta("sensor_id");
+        var host = GetMeta("host_id");
+        if (sensor is null || host is null)
+        {
+            return null;
+        }
+
+        return new Enrollment(sensor, host, null, DateTimeOffset.MinValue, 1, 0, 0);
+    }
+
+    private void EnsureEnrollment()
+    {
+        using (var command = _connection.CreateCommand())
+        {
+            command.CommandText = "SELECT 1 FROM sensors LIMIT 1;";
+            if (command.ExecuteScalar() is not null)
+            {
+                return;
+            }
+        }
+
+        var sensor = GetMeta("sensor_id");
+        var host = GetMeta("host_id");
+        if (sensor is not null && host is not null)
+        {
+            Enroll(sensor, host);
+        }
     }
 
     public (string SensorId, string HostId) EnsureIdentity(string? sensorId, string? hostId)
@@ -201,6 +315,7 @@ public sealed class SqliteEventStore : IDisposable
 
         SetMeta("sensor_id", resolvedSensor);
         SetMeta("host_id", resolvedHost);
+        EnsureEnrollment();
         return (resolvedSensor, resolvedHost);
     }
 

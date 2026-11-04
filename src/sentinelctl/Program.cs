@@ -2,6 +2,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Sentinel.Core.Fixture;
+using Sentinel.Core.Fleet;
 using Sentinel.Core.Model;
 using Sentinel.Core.Ocsf;
 using Sentinel.Core.Rules;
@@ -27,6 +28,12 @@ try
     {
         case "init":
             Init(options);
+            break;
+        case "enroll":
+            Enroll(options);
+            break;
+        case "fleet":
+            Fleet(options);
             break;
         case "ingest":
             Ingest(options);
@@ -94,6 +101,43 @@ static void Init(Dictionary<string, string?> options)
     Console.WriteLine($"host_id: {hostId}");
 }
 
+static void Enroll(Dictionary<string, string?> options)
+{
+    var sensorId = Get(options, "sensor-id")
+        ?? throw new ArgumentException("--sensor-id is required.");
+    var hostId = Get(options, "host-id")
+        ?? throw new ArgumentException("--host-id is required.");
+    using var store = OpenStore(options);
+    store.Initialize();
+    var enrollment = store.Enroll(
+        sensorId,
+        hostId,
+        Get(options, "host-name"),
+        Integer(options, "config-generation", 1),
+        Long(options, "clock-offset-ms", 0),
+        Long(options, "clock-uncertainty-ms", 0));
+    Console.WriteLine($"sensor_id: {enrollment.SensorId}");
+    Console.WriteLine($"host_id: {enrollment.HostId}");
+    Console.WriteLine($"host_name: {enrollment.HostName ?? ""}");
+    Console.WriteLine($"clock_offset_ms: {enrollment.ClockOffsetMs}");
+    Console.WriteLine($"clock_uncertainty_ms: {enrollment.ClockUncertaintyMs}");
+}
+
+static void Fleet(Dictionary<string, string?> options)
+{
+    var paths = (Get(options, "dbs") ?? Get(options, "db")
+        ?? throw new ArgumentException("--dbs is required."))
+        .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    var report = FleetService.Inspect(paths);
+    var format = (Get(options, "format") ?? "table").ToLowerInvariant();
+    Console.Write(format switch
+    {
+        "json" => FleetService.RenderJson(report),
+        "table" => FleetService.RenderTable(report),
+        _ => throw new ArgumentException("--format must be table or json.")
+    });
+}
+
 static void Ingest(Dictionary<string, string?> options)
 {
     var fixturePath = Get(options, "fixture")
@@ -104,7 +148,9 @@ static void Ingest(Dictionary<string, string?> options)
     var rules = RuleLoader.LoadDirectory(rulesPath);
     using var store = OpenStore(options);
     store.Initialize();
-    var (sensorId, hostId) = store.EnsureIdentity(fixture.SensorId, fixture.HostId);
+    var (sensorId, hostId) = store.EnsureIdentity(
+        Get(options, "sensor-id") ?? fixture.SensorId,
+        Get(options, "host-id") ?? fixture.HostId);
     var service = new IngestionService(store, sensorId, hostId);
 
     var report = service.Ingest(
@@ -525,7 +571,10 @@ static void Usage()
     Console.WriteLine("sentinelctl <command> [options]");
     Console.WriteLine();
     Console.WriteLine("  init      --db <path> [--sensor-id <uuid>] [--host-id <uuid>]");
-    Console.WriteLine("  ingest    --fixture <dir> [--db <path>] [--rules <dir>]");
+    Console.WriteLine("  enroll    --db <path> --sensor-id <id> --host-id <id> [--host-name <name>]");
+    Console.WriteLine("            [--config-generation 1] [--clock-offset-ms 0] [--clock-uncertainty-ms 0]");
+    Console.WriteLine("  fleet     --dbs <path;path> [--format table|json]");
+    Console.WriteLine("  ingest    --fixture <dir> [--db <path>] [--rules <dir>] [--sensor-id <id>] [--host-id <id>]");
     Console.WriteLine("  timeline  [--db <path>]");
     Console.WriteLine("  replay    [--db <path>] [--rules <dir>]");
     Console.WriteLine("  gaps      [--db <path>]");
