@@ -239,6 +239,32 @@ public sealed class SqliteEventStore : IDisposable
             reader.IsDBNull(7) ? null : reader.GetString(7));
     }
 
+    public IReadOnlyList<Bookmark> ReadBookmarks()
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT source_id, incarnation_id, config_generation, event_record_id,
+                   coverage_start_record_id, sensor_sequence, updated_at, bookmark_xml
+            FROM bookmarks ORDER BY source_id;
+            """;
+        using var reader = command.ExecuteReader();
+        var bookmarks = new List<Bookmark>();
+        while (reader.Read())
+        {
+            bookmarks.Add(new Bookmark(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetInt32(2),
+                reader.GetInt64(3),
+                reader.IsDBNull(4) ? null : reader.GetInt64(4),
+                reader.GetInt64(5),
+                DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                reader.IsDBNull(7) ? null : reader.GetString(7)));
+        }
+
+        return bookmarks;
+    }
+
     public AppendResult Append(
         LocalEvent value,
         IReadOnlyList<AlertCandidate> alerts,

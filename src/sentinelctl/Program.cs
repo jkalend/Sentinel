@@ -5,6 +5,7 @@ using Sentinel.Core.Fixture;
 using Sentinel.Core.Model;
 using Sentinel.Core.Ocsf;
 using Sentinel.Core.Rules;
+using Sentinel.Core.Runs;
 using Sentinel.Core.Store;
 using Sentinel.Core.Sysmon;
 using Sentinel.Core.Timeline;
@@ -47,6 +48,12 @@ try
             break;
         case "purges":
             Purges(options);
+            break;
+        case "run":
+            Run(options);
+            break;
+        case "verify-run":
+            exitCode = VerifyRun(options);
             break;
         case "backup":
             Backup(options);
@@ -293,6 +300,66 @@ static void Restore(Dictionary<string, string?> options)
     Console.WriteLine($"events: {report.Manifest.Counts.Events}");
 }
 
+static void Run(Dictionary<string, string?> options)
+{
+    var output = Get(options, "output")
+        ?? throw new ArgumentException("--output is required.");
+    var rules = RuleLoader.LoadDirectory(Get(options, "rules") ?? "rules");
+    var schema = ResolveSchemaRoot(Get(options, "schema"));
+    using var store = OpenStore(options);
+    store.Initialize();
+    var manifest = RunService.Create(store, rules, schema, output, options.ContainsKey("include-payload"));
+    Console.WriteLine($"run_id: {manifest.RunId}");
+    Console.WriteLine($"manifest: {Path.Combine(Path.GetFullPath(output), "manifest.json")}");
+    Console.WriteLine($"content_sha256: {manifest.ContentSha256}");
+    Console.WriteLine($"manifest_sha256: {manifest.ManifestSha256}");
+    Console.WriteLine($"events: {manifest.Coverage.EventCount}");
+    Console.WriteLine($"sources: {manifest.Coverage.SourceCount}");
+    Console.WriteLine($"alerts: {manifest.Coverage.AlertCount}");
+    Console.WriteLine($"gaps: {manifest.Coverage.GapCount}");
+    Console.WriteLine($"export: {manifest.Export.Mode}");
+}
+
+static int VerifyRun(Dictionary<string, string?> options)
+{
+    var manifestPath = Get(options, "manifest")
+        ?? throw new ArgumentException("--manifest is required.");
+    var manifest = RunService.ReadManifest(manifestPath);
+    SqliteEventStore? store = null;
+    try
+    {
+        var databasePath = Get(options, "db");
+        if (!string.IsNullOrWhiteSpace(databasePath))
+        {
+            if (!File.Exists(databasePath))
+            {
+                throw new FileNotFoundException($"database not found: {databasePath}");
+            }
+
+            store = new SqliteEventStore(databasePath, readOnly: true);
+        }
+
+        var verification = RunService.Verify(manifest, Path.GetDirectoryName(Path.GetFullPath(manifestPath))!, store);
+        Console.WriteLine($"manifest_valid: {verification.ManifestValid.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"content_valid: {verification.ContentValid.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"payload_valid: {verification.PayloadValid.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"included: {verification.Included}");
+        Console.WriteLine($"missing: {verification.Missing}");
+        Console.WriteLine($"changed: {verification.Changed}");
+        Console.WriteLine($"redacted: {verification.Redacted}");
+        foreach (var message in verification.Messages)
+        {
+            Console.WriteLine(message);
+        }
+
+        return verification.Ok ? 0 : 1;
+    }
+    finally
+    {
+        store?.Dispose();
+    }
+}
+
 static int Verify(Dictionary<string, string?> options)
 {
     var schemaRoot = ResolveSchemaRoot(Get(options, "schema"));
@@ -469,5 +536,7 @@ static void Usage()
     Console.WriteLine("  purges    [--db <path>] [--limit <n>]");
     Console.WriteLine("  backup    --db <path> --output <path>");
     Console.WriteLine("  restore   --backup <path> [--db <path>]");
+    Console.WriteLine("  run       --db <path> --output <dir> [--rules <dir>] [--schema <dir>] [--include-payload]");
+    Console.WriteLine("  verify-run --manifest <path> [--db <path>]");
     Console.WriteLine("  verify    [--db <path>] [--schema <dir>]");
 }

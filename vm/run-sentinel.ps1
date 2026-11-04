@@ -648,13 +648,16 @@ try {
 
             $beforeIncarnation = if ($installedBookmarkBefore -match 'incarnation=(\S+)') { $Matches[1] } else { '' }
             $afterIncarnation = if ($postPurgeBookmark -match 'incarnation=(\S+)') { $Matches[1] } else { '' }
+            $purgeDeleted = if ($purgeResult.Output -match 'data_events_deleted:\s*(\d+)') { [int]$Matches[1] } else { 0 }
+            $purgeRaw = if ($purgeResult.Output -match 'raw_xml_purged:\s*(\d+)') { [int]$Matches[1] } else { 0 }
             $retentionOk = (
                 $installedEvents -gt 5 -and
                 $backupResult.ExitCode -eq 0 -and
                 $manifest -and
                 $purgeResult.ExitCode -eq 0 -and
+                $purgeDeleted -gt 0 -and
+                $purgeRaw -gt 0 -and
                 $postPurgeEvents -gt 0 -and
-                $postPurgeEvents -lt $installedEvents -and
                 $beforeIncarnation -ne '' -and
                 $beforeIncarnation -eq $afterIncarnation -and
                 $appendEvents -gt $postPurgeEvents -and
@@ -671,6 +674,8 @@ try {
             $result.retention_post_purge_bookmark = $postPurgeBookmark
             $result.retention_append_events = $appendEvents
             $result.retention_restore_exit = $restoreResult.ExitCode
+            $result.retention_deleted = $purgeDeleted
+            $result.retention_raw_purged = $purgeRaw
             $result.retention_restored_events = $restoredEvents
             $result.retention_manifest_events = if ($manifest) { $manifest.Counts.Events } else { $null }
             $result.retention_ok = $retentionOk
