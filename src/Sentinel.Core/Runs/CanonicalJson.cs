@@ -16,6 +16,9 @@ public static class CanonicalJson
     public static string Serialize<T>(T value) =>
         Serialize(JsonSerializer.SerializeToNode(value) ?? throw new ArgumentNullException(nameof(value)));
 
+    public static string Serialize<T>(T value, JsonSerializerOptions options) =>
+        Serialize(JsonSerializer.SerializeToNode(value, options) ?? throw new ArgumentNullException(nameof(value)));
+
     public static string Serialize(JsonNode? node)
     {
         using var stream = new MemoryStream();

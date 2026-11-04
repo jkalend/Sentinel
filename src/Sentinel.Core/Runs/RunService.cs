@@ -95,7 +95,7 @@ public static class RunService
                 {
                     var value = payloadByKey[pin.SourceKey];
                     var payload = Payload(value);
-                    var line = CanonicalJson.Serialize(payload);
+                    var line = CanonicalJson.Serialize(payload, ManifestOptions);
                     writer.WriteLine(line);
                 }
             }
@@ -104,7 +104,7 @@ public static class RunService
                 .Select(pin => pin with
                 {
                     PayloadIncluded = true,
-                    PayloadSha256 = CanonicalJson.HashText(CanonicalJson.Serialize(Payload(payloadByKey[pin.SourceKey])))
+                    PayloadSha256 = CanonicalJson.HashText(CanonicalJson.Serialize(Payload(payloadByKey[pin.SourceKey]), ManifestOptions))
                 })
                 .ToList();
             payloadHash = CanonicalJson.HashFile(path);
@@ -241,9 +241,9 @@ public static class RunService
 
                     try
                     {
-                        var payload = JsonSerializer.Deserialize<RunPayload>(line)
+                        var payload = JsonSerializer.Deserialize<RunPayload>(line, ManifestOptions)
                             ?? throw new InvalidDataException("empty payload");
-                        var canonical = CanonicalJson.Serialize(payload);
+                        var canonical = CanonicalJson.Serialize(payload, ManifestOptions);
                         if (!payloads.TryAdd(payload.SourceKey, (payload, canonical)))
                         {
                             payloadValid = false;
