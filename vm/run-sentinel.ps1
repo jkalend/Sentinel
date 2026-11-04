@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
   Disposable Sentinel V0.1 live-source validation.
@@ -176,7 +176,7 @@ function Finish {
                 }
             }
 
-            foreach ($name in @('result.json', 'main-result.json', 'reboot-state.json', 'agent-run.txt', 'agent-run-first.txt', 'verify.txt', 'timeline.txt', 'replay.txt', 'probes.json', 'run.log', 'probes.out.txt', 'install.txt', 'uninstall.txt')) {
+            foreach ($name in @('result.json', 'main-result.json', 'reboot-state.json', 'agent-run.txt', 'agent-run-first.txt', 'verify.txt', 'timeline.txt', 'replay.txt', 'probes.json', 'run.log', 'probes.out.txt', 'install.txt', 'uninstall.txt', 'installed-status-before.txt', 'installed-status-after-purge.txt', 'installed-status-after-append.txt', 'retention-backup.txt', 'retention-backup.db', 'retention-backup.db.manifest.json', 'retention-purge.txt', 'retention-restore.txt', 'retention-restored-status.txt', 'retention-restored.db')) {
                 $source = Join-Path $root $name
                 if (Test-Path -LiteralPath $source) {
                     Copy-Item -LiteralPath $source -Destination $destination -Force
@@ -593,15 +593,95 @@ try {
             $taskState = if ($taskInfo) { $taskInfo.State.ToString() } else { 'missing' }
             $taskDetails = Get-ScheduledTaskInfo -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
             $taskLastResult = if ($taskDetails) { $taskDetails.LastTaskResult } else { $null }
+            $installedDb = Join-Path $installedRoot 'data\sentinel.db'
+
+            $installedStatusBefore = $null
+            $installedEvents = 0
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+                $installedStatusBefore = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $installedDb)
+                $installedEvents = Get-StatusNumber -Text $installedStatusBefore.Output -Name 'events'
+                if ($installedEvents -ge 20) { break }
+                Start-Sleep -Seconds 2
+            }
+            $installedBookmarkBefore = Get-StatusValue -Text $installedStatusBefore.Output -Name 'bookmark'
+            $installedStatusBefore.Output | Set-Content -LiteralPath (Join-Path $root 'installed-status-before.txt') -Encoding UTF8
+
+            $retentionBackupPath = Join-Path $root 'retention-backup.db'
+            $retentionRestoredPath = Join-Path $root 'retention-restored.db'
+            $retentionManifestPath = $retentionBackupPath + '.manifest.json'
+            foreach ($path in @($retentionBackupPath, $retentionManifestPath, $retentionRestoredPath)) {
+                if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+            }
+
+            $backupResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                'backup', '--db', $installedDb, '--output', $retentionBackupPath)
+            $backupResult.Output | Set-Content -LiteralPath (Join-Path $root 'retention-backup.txt') -Encoding UTF8
+
+            $purgeResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                'purge', '--db', $installedDb,
+                '--event-days', '0', '--raw-days', '0',
+                '--alert-days', '36500', '--health-days', '36500', '--gap-days', '36500',
+                '--keep-events', '5', '--apply')
+            $purgeResult.Output | Set-Content -LiteralPath (Join-Path $root 'retention-purge.txt') -Encoding UTF8
+
+            $postPurgeStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $installedDb)
+            $postPurgeStatus.Output | Set-Content -LiteralPath (Join-Path $root 'installed-status-after-purge.txt') -Encoding UTF8
+            $postPurgeEvents = Get-StatusNumber -Text $postPurgeStatus.Output -Name 'events'
+            $postPurgeBookmark = Get-StatusValue -Text $postPurgeStatus.Output -Name 'bookmark'
+
+            Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', 'echo retention-append-probe') -Wait | Out-Null
+            Start-Sleep -Seconds 6
+            $appendStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $installedDb)
+            $appendStatus.Output | Set-Content -LiteralPath (Join-Path $root 'installed-status-after-append.txt') -Encoding UTF8
+            $appendEvents = Get-StatusNumber -Text $appendStatus.Output -Name 'events'
+
+            $restoreResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                'restore', '--backup', $retentionBackupPath, '--db', $retentionRestoredPath)
+            $restoreResult.Output | Set-Content -LiteralPath (Join-Path $root 'retention-restore.txt') -Encoding UTF8
+            $restoredStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $retentionRestoredPath)
+            $restoredStatus.Output | Set-Content -LiteralPath (Join-Path $root 'retention-restored-status.txt') -Encoding UTF8
+            $restoredEvents = Get-StatusNumber -Text $restoredStatus.Output -Name 'events'
+            $manifest = $null
+            if (Test-Path -LiteralPath $retentionManifestPath) {
+                try { $manifest = Get-Content -LiteralPath $retentionManifestPath -Raw | ConvertFrom-Json } catch { }
+            }
+
+            $beforeIncarnation = if ($installedBookmarkBefore -match 'incarnation=(\S+)') { $Matches[1] } else { '' }
+            $afterIncarnation = if ($postPurgeBookmark -match 'incarnation=(\S+)') { $Matches[1] } else { '' }
+            $retentionOk = (
+                $installedEvents -gt 5 -and
+                $backupResult.ExitCode -eq 0 -and
+                $manifest -and
+                $purgeResult.ExitCode -eq 0 -and
+                $postPurgeEvents -gt 0 -and
+                $postPurgeEvents -lt $installedEvents -and
+                $beforeIncarnation -ne '' -and
+                $beforeIncarnation -eq $afterIncarnation -and
+                $appendEvents -gt $postPurgeEvents -and
+                $restoreResult.ExitCode -eq 0 -and
+                $manifest.Counts.Events -eq $restoredEvents
+            )
+            $result.retention_backup_exit = $backupResult.ExitCode
+            $result.retention_backup = Limit-Text $backupResult.Output
+            $result.retention_purge_exit = $purgeResult.ExitCode
+            $result.retention_purge = Limit-Text $purgeResult.Output
+            $result.retention_pre_events = $installedEvents
+            $result.retention_pre_bookmark = $installedBookmarkBefore
+            $result.retention_post_purge_events = $postPurgeEvents
+            $result.retention_post_purge_bookmark = $postPurgeBookmark
+            $result.retention_append_events = $appendEvents
+            $result.retention_restore_exit = $restoreResult.ExitCode
+            $result.retention_restored_events = $restoredEvents
+            $result.retention_manifest_events = if ($manifest) { $manifest.Counts.Events } else { $null }
+            $result.retention_ok = $retentionOk
+
             Stop-ScheduledTask -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
 
-            $installedDb = Join-Path $installedRoot 'data\sentinel.db'
             $installedTimeline = ''
             $installedTimelineExit = -1
             $installedVerify = ''
             $installedVerifyExit = -1
-            $installedEvents = 0
             $agentLogPath = Join-Path $installedRoot 'data\agent.log'
             $agentLog = if (Test-Path -LiteralPath $agentLogPath) { Get-Content -LiteralPath $agentLogPath -Raw } else { '' }
             $installedDbExists = Test-Path -LiteralPath $installedDb
@@ -609,7 +689,6 @@ try {
                 $installedTimelineResult = Invoke-Captured -FilePath $ctl -Arguments @('timeline', '--db', $installedDb)
                 $installedTimelineExit = $installedTimelineResult.ExitCode
                 $installedTimeline = $installedTimelineResult.Output
-                $installedEvents = @($installedTimeline -split "`n" | Where-Object { $_ -match '^\s*\d+\s' }).Count
                 $installedVerifyResult = Invoke-Captured -FilePath $ctl -Arguments @('verify', '--db', $installedDb, '--schema', (Join-Path $root 'schemas\ocsf-1.9.0'))
                 $installedVerifyExit = $installedVerifyResult.ExitCode
                 $installedVerify = $installedVerifyResult.Output
@@ -659,7 +738,8 @@ try {
                 $installedVerifyExit -eq 0 -and
                 $installedEvents -gt 0 -and
                 $readerAclOk -and
-                $outsiderDenied
+                $outsiderDenied -and
+                $retentionOk
             )
 
             $mainOk = (
@@ -670,7 +750,8 @@ try {
                 $replayExit -eq 0 -and
                 $captureExit -eq 0 -and
                 $captureFiles -gt 0 -and
-                $probeOk
+                $probeOk -and
+                $retentionOk
             )
 
             if (-not $NoReboot) {
@@ -749,7 +830,8 @@ try {
                 $uninstallExit -eq 0 -and
                 $uninstallRestored -and
                 $readerRemoved -and
-                $installRemoved
+                $installRemoved -and
+                $retentionOk
             )
 
             $result.installer_exit = $installExit

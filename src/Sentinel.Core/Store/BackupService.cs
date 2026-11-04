@@ -40,24 +40,7 @@ public static class BackupService
         var partialManifest = manifestPath + ".partial";
         try
         {
-            using (var source = new SqliteConnection(new SqliteConnectionStringBuilder
-                   {
-                       DataSource = sourcePath,
-                       Mode = SqliteOpenMode.ReadOnly,
-                       Pooling = false
-                   }.ToString()))
-            using (var destination = new SqliteConnection(new SqliteConnectionStringBuilder
-                   {
-                       DataSource = partialPath,
-                       Mode = SqliteOpenMode.ReadWriteCreate,
-                       Pooling = false
-                   }.ToString()))
-            {
-                source.Open();
-                destination.Open();
-                source.BackupDatabase(destination);
-            }
-
+            CopyOnline(sourcePath, partialPath);
             var manifest = ReadManifestValues(partialPath, now ?? DateTimeOffset.UtcNow);
             File.Move(partialPath, backupPath);
             var finalManifest = manifest with
@@ -78,6 +61,57 @@ public static class BackupService
             DeleteIfExists(manifestPath);
             throw;
         }
+    }
+
+    private static void CopyOnline(string sourcePath, string destinationPath)
+    {
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= 40; attempt++)
+        {
+            DeleteIfExists(destinationPath);
+            try
+            {
+                using var source = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = sourcePath,
+                    Mode = SqliteOpenMode.ReadOnly,
+                    Pooling = false,
+                    DefaultTimeout = 30
+                }.ToString());
+                using var destination = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = destinationPath,
+                    Mode = SqliteOpenMode.ReadWriteCreate,
+                    Pooling = false,
+                    DefaultTimeout = 30
+                }.ToString());
+                source.Open();
+                destination.Open();
+                using (var busy = source.CreateCommand())
+                {
+                    busy.CommandText = "PRAGMA busy_timeout = 30000;";
+                    busy.ExecuteNonQuery();
+                }
+
+                using (var busy = destination.CreateCommand())
+                {
+                    busy.CommandText = "PRAGMA busy_timeout = 30000;";
+                    busy.ExecuteNonQuery();
+                }
+
+                source.BackupDatabase(destination);
+                return;
+            }
+            catch (SqliteException error) when (error.SqliteErrorCode is 5 or 6)
+            {
+                lastError = error;
+                System.Threading.Thread.Sleep(250);
+            }
+        }
+
+        throw new IOException(
+            $"online backup did not acquire a stable snapshot after 40 attempts: {lastError?.Message}",
+            lastError);
     }
 
     public static RestoreReport Restore(string backupPath, string databasePath)
