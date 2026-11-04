@@ -162,6 +162,13 @@ public sealed class SqliteEventStore : IDisposable
                 gaps_deleted INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS transport_state (
+                collector TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                last_acked_sequence INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS purged_ranges (
                 purge_id TEXT PRIMARY KEY,
                 first_sequence INTEGER NOT NULL,
@@ -354,6 +361,32 @@ public sealed class SqliteEventStore : IDisposable
             reader.IsDBNull(7) ? null : reader.GetString(7));
     }
 
+    public long GetTransportAck(string collector)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT last_acked_sequence FROM transport_state WHERE collector = $collector;";
+        command.Parameters.AddWithValue("$collector", collector);
+        return command.ExecuteScalar() is long value ? value : 0;
+    }
+
+    public void SetTransportAck(string collector, string sourceId, long sensorSequence)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO transport_state (collector, source_id, last_acked_sequence, updated_at)
+            VALUES ($collector, $source_id, $sequence, $updated_at)
+            ON CONFLICT(collector) DO UPDATE SET
+                source_id = excluded.source_id,
+                last_acked_sequence = excluded.last_acked_sequence,
+                updated_at = excluded.updated_at;
+            """;
+        command.Parameters.AddWithValue("$collector", collector);
+        command.Parameters.AddWithValue("$source_id", sourceId);
+        command.Parameters.AddWithValue("$sequence", sensorSequence);
+        command.Parameters.AddWithValue("$updated_at", Timestamp(DateTimeOffset.UtcNow));
+        command.ExecuteNonQuery();
+    }
+
     public IReadOnlyList<Bookmark> ReadBookmarks()
     {
         using var command = _connection.CreateCommand();
@@ -517,8 +550,15 @@ public sealed class SqliteEventStore : IDisposable
 
     public IReadOnlyList<LocalEvent> ReadEvents()
     {
+        return ReadEventsAfter(0, int.MaxValue);
+    }
+
+    public IReadOnlyList<LocalEvent> ReadEventsAfter(long afterSequence, int limit)
+    {
         using var command = _connection.CreateCommand();
-        command.CommandText = "SELECT * FROM events ORDER BY sensor_sequence;";
+        command.CommandText = "SELECT * FROM events WHERE sensor_sequence > $after ORDER BY sensor_sequence LIMIT $limit;";
+        command.Parameters.AddWithValue("$after", afterSequence);
+        command.Parameters.AddWithValue("$limit", limit);
         using var reader = command.ExecuteReader();
         var events = new List<LocalEvent>();
         while (reader.Read())

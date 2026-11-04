@@ -8,6 +8,7 @@ using Sentinel.Core.Ocsf;
 using Sentinel.Core.Rules;
 using Sentinel.Core.Runs;
 using Sentinel.Core.Store;
+using Sentinel.Core.Transport;
 using Sentinel.Core.Sysmon;
 using Sentinel.Core.Timeline;
 
@@ -34,6 +35,12 @@ try
             break;
         case "fleet":
             Fleet(options);
+            break;
+        case "collector":
+            Collector(options);
+            break;
+        case "push":
+            Push(options);
             break;
         case "ingest":
             Ingest(options);
@@ -136,6 +143,49 @@ static void Fleet(Dictionary<string, string?> options)
         "table" => FleetService.RenderTable(report),
         _ => throw new ArgumentException("--format must be table or json.")
     });
+}
+
+static void Collector(Dictionary<string, string?> options)
+{
+    var prefix = Get(options, "listen")
+        ?? throw new ArgumentException("--listen is required.");
+    var root = Get(options, "root")
+        ?? throw new ArgumentException("--root is required.");
+    var rules = Get(options, "rules") is { } rulesPath
+        ? RuleLoader.LoadDirectory(rulesPath)
+        : null;
+    var allowed = Get(options, "allow-sensors")?
+        .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    using var collector = new TransportCollector(prefix, root, rules, Get(options, "token"), allowed);
+    collector.Start();
+    Console.WriteLine($"collector: {collector.Prefix}");
+    Console.WriteLine($"root: {Path.GetFullPath(root)}");
+    Console.WriteLine("press Ctrl+C to stop");
+    var stop = new ManualResetEventSlim();
+    Console.CancelKeyPress += (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        stop.Set();
+    };
+    stop.Wait();
+    collector.StopAsync().GetAwaiter().GetResult();
+}
+
+static void Push(Dictionary<string, string?> options)
+{
+    var collector = Get(options, "collector")
+        ?? throw new ArgumentException("--collector is required.");
+    var sender = new TransportSender(
+        Get(options, "db") ?? "data/sentinel.db",
+        collector,
+        Get(options, "token"),
+        Integer(options, "batch-size", 100),
+        Integer(options, "retries", 3));
+    var result = sender.PushAllAsync().GetAwaiter().GetResult();
+    Console.WriteLine($"batches: {result.Batches}");
+    Console.WriteLine($"accepted: {result.Accepted}");
+    Console.WriteLine($"duplicates: {result.Duplicates}");
+    Console.WriteLine($"last_acked_sequence: {result.LastAckedSequence}");
 }
 
 static void Ingest(Dictionary<string, string?> options)
@@ -577,6 +627,9 @@ static void Usage()
     Console.WriteLine("  enroll    --db <path> --sensor-id <id> --host-id <id> [--host-name <name>]");
     Console.WriteLine("            [--config-generation 1] [--clock-offset-ms 0] [--clock-uncertainty-ms 0]");
     Console.WriteLine("  fleet     --dbs <path;path> [--format table|json]");
+    Console.WriteLine("  collector --listen <http://127.0.0.1:port/> --root <dir> [--rules <dir>]");
+    Console.WriteLine("            [--token <token>] [--allow-sensors <id;id>]");
+    Console.WriteLine("  push      --db <path> --collector <http://127.0.0.1:port/> [--token <token>] [--batch-size 100] [--retries 3]");
     Console.WriteLine("  ingest    --fixture <dir> [--db <path>] [--rules <dir>] [--sensor-id <id>] [--host-id <id>]");
     Console.WriteLine("  timeline  [--db <path>]");
     Console.WriteLine("  replay    [--db <path>] [--rules <dir>]");

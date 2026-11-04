@@ -2,7 +2,7 @@
 
 > Local-first security telemetry and detection: collect, normalize, detect, and investigate.
 
-**Status: V0.1 live-source lab pass; V0.2 clean-store + reboot-resume slice pass.** A disposable Windows 11 Enterprise Evaluation 26H2 VM (build 26300, QEMU/KVM, built-in Sysmon) now runs the V0.2 first slice end to end. The latest harness cleared `data`/`capture` and returned `ok:true`: 2,710 clean-store events, 14 alerts, 0 gaps, 0 schema errors, replay 14/14, and a 2,972-file SATA capture. The installed `sentinel-reader` task stored 12 events before reboot and 308 at the continuation check (310 after the agent stopped), resumed the same sensor incarnation/bookmark, remained Running, and was torn down with the channel ACL, user rights, reader task, and resume task restored/removed. Earlier V0.1 evidence includes the 650-record retained-store run, the 1,428-event store, and the reader/task/installer checks. The retention/backup first implementation is host-verified against fixtures: audited age/size purge with raw-XML purge and timeline tombstones, plus online backup and fail-closed restore. V0.3 reproducible investigation runs and bounded local export are also host-verified: canonical manifests pin source/event/time/clock/mapping/schema/rule/engine identities, with manifest-only default and explicit payload export verification. V0.4 adds explicit local enrollment and a read-only multi-store host/coverage view that flags clock uncertainty and missing telemetry; remote transport, rule packs, fleet configuration, and overhead measurements remain open. Engine ownership and the C#-only first artifact are decided ([D-0015](https://github.com/jkalend/project-planning/blob/main/decisions/0015-sentinel-engine-ownership.md), [D-0014](https://github.com/jkalend/project-planning/blob/main/decisions/0014-language-artifact-policy.md)).
+**Status: V0.1 live-source lab pass; V0.2 clean-store + reboot-resume slice pass.** A disposable Windows 11 Enterprise Evaluation 26H2 VM (build 26300, QEMU/KVM, built-in Sysmon) now runs the V0.2 first slice end to end. The latest harness cleared `data`/`capture` and returned `ok:true`: 2,710 clean-store events, 14 alerts, 0 gaps, 0 schema errors, replay 14/14, and a 2,972-file SATA capture. The installed `sentinel-reader` task stored 12 events before reboot and 308 at the continuation check (310 after the agent stopped), resumed the same sensor incarnation/bookmark, remained Running, and was torn down with the channel ACL, user rights, reader task, and resume task restored/removed. Earlier V0.1 evidence includes the 650-record retained-store run, the 1,428-event store, and the reader/task/installer checks. The retention/backup first implementation is host-verified against fixtures: audited age/size purge with raw-XML purge and timeline tombstones, plus online backup and fail-closed restore. V0.3 reproducible investigation runs and bounded local export are also host-verified: canonical manifests pin source/event/time/clock/mapping/schema/rule/engine identities, with manifest-only default and explicit payload export verification. V0.4 adds explicit local enrollment and a read-only multi-store host/coverage view that flags clock uncertainty and missing telemetry. V0.4.1 adds a versioned HTTP push envelope with token/allowlist checks, idempotent collector ingest, acknowledgement after commit, retry/offline behavior, and per-sensor collector stores consumable by the fleet view. Rule packs, fleet configuration, and overhead measurements remain open. Engine ownership and the C#-only first artifact are decided ([D-0015](https://github.com/jkalend/project-planning/blob/main/decisions/0015-sentinel-engine-ownership.md), [D-0014](https://github.com/jkalend/project-planning/blob/main/decisions/0014-language-artifact-policy.md)).
 
 Canonical design: [sentinel](https://github.com/jkalend/project-planning/blob/main/projects/sentinel.md)
 
@@ -85,6 +85,7 @@ Sentinel/
 ├─ docs/v02-plan.md           retention, multi-sensor, rule packs, fleet config
 ├─ docs/v03-runs-export.md    reproducible run and export contract
 ├─ docs/v04-local-fleet.md    local enrollment and fleet view
+├─ docs/v04.1-remote-transport.md  bounded push/collector contract
 └─ README.md
 ```
 
@@ -104,6 +105,7 @@ dotnet run --project src/sentinelctl -- restore --backup backups/sentinel.db --d
 dotnet run --project src/sentinelctl -- run --db data/sentinel.db --output runs/fixture-a
 dotnet run --project src/sentinelctl -- verify-run --manifest runs/fixture-a/manifest.json --db data/sentinel.db
 dotnet run --project src/sentinelctl -- fleet --dbs "data/a.db;data/b.db"
+dotnet run --project src/sentinelctl -- collector --listen "http://127.0.0.1:18099/" --root data/collector
 ```
 
 The fixture contains 10 records: 3 alerts, 1 source-health record, 0 gaps. Re-ingesting the same fixture reports 10 duplicates and leaves the event, alert, and gap counts unchanged. `verify` recomputes each raw XML hash and validates the stored OCSF event against the pinned 1.9.0 schema requirements.
@@ -164,6 +166,7 @@ Bespoke enforcement — host firewall, antivirus, EDR containment, IDS/IPS, WAF,
 
 ## Planning and research
 
+- [V0.4.1 transport validation](docs/v04.1-remote-transport.md)
 - [V0.4 local fleet validation](docs/v04-local-fleet.md)
 - [V0.3 run/export validation](docs/v03-runs-export.md)
 - [V0.2 retention/backup validation](docs/v02-retention-backup.md)

@@ -38,7 +38,7 @@ docker run -d --name sentinel-qemu-1 `
     -drive file=/vm/sentinel.qcow2,format=qcow2,if=ide,index=0 `
     -drive "file=/iso/$WindowsIso",media=cdrom,readonly=on,if=ide,index=1 `
     -drive file=/vm/sentinel-test.iso,media=cdrom,readonly=on,if=ide,index=2 `
-    -drive file=/vm/sentinel-out-part.img,format=raw,if=none,id=out `
+    -drive file=/vm/sentinel-out.img,format=raw,if=none,id=out `
     -device ich9-ahci,id=ahci `
     -device ide-hd,drive=out,bus=ahci.0 `
     -boot order=d,menu=off `
