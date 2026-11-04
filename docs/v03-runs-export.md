@@ -63,6 +63,9 @@ dotnet run --project src/sentinelctl -- run --db data/sentinel.db --output runs/
 # Explicit payload export.
 dotnet run --project src/sentinelctl -- run --db data/sentinel.db --output runs/2026-11-04-b --include-payload
 
+# Explicitly selected source keys (semicolon-separated).
+dotnet run --project src/sentinelctl -- run --db data/sentinel.db --output runs/2026-11-04-c --source-keys "<sensor>|<channel>|<incarnation>|<record>"
+
 # Verify manifest integrity, and optionally the live source keys.
 dotnet run --project src/sentinelctl -- verify-run --manifest runs/2026-11-04-b/manifest.json --db data/sentinel.db
 ```
@@ -80,17 +83,18 @@ record, 0 gaps.
 | Changed run id | manifest hash validation fails |
 | Manifest-only default | no `payload.jsonl` |
 | Explicit payload | 10 canonical JSONL records; verifies |
+| Selected payload | one source key produces one payload line; other pins remain manifest-only |
 | Payload byte change | `payload_valid:false`, `changed` event reported |
 | Payload truncation | `payload_valid:false`, `missing` events reported |
 | Purge then verify | 9 source references reported missing; verification fails |
 | Changed rule version | rule hash and content hash change |
-| Test suite | 77 tests passed |
+| Test suite | 78 tests passed |
 | Live V0.2 database | 2,710 events across 7 source/incarnation groups, 14 alerts; manifest-only and 17 MiB payload export verified |
 
 ## Limits
 
-- `--include-payload` currently exports all events in the run, not an arbitrary
-  source-key selection. The option is explicit but not a per-event selector.
+- `--include-payload` exports all events unless `--source-keys` selects a
+  semicolon-separated subset. Unknown selected keys fail the run.
 - The run is immutable by content, not by filesystem permissions. A writer can
   replace files; verification detects replacement through hashes, not
   authenticity.

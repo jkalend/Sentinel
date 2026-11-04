@@ -102,6 +102,38 @@ public class RunTests
     }
 
     [Fact]
+    public void Payload_export_can_select_one_source_key()
+    {
+        var database = TestSupport.NewDatabasePath();
+        var output = NewDirectory();
+        try
+        {
+            using var store = CreateStore(database);
+            var fixture = TestSupport.Fixture();
+            var key = $"{fixture.SensorId}|{fixture.Channel}|{fixture.IncarnationId}|1001";
+            var manifest = RunService.Create(
+                store,
+                TestSupport.Rules(),
+                TestSupport.SchemaPath,
+                output,
+                includePayload: true,
+                selectedSourceKeys: [key]);
+
+            Assert.Single(manifest.Export.SelectedSourceKeys!);
+            Assert.Equal(key, manifest.Export.SelectedSourceKeys![0]);
+            Assert.Single(File.ReadAllLines(Path.Combine(output, "payload.jsonl")));
+            Assert.True(manifest.Events.Single(value => value.SourceKey == key).PayloadIncluded);
+            Assert.All(manifest.Events.Where(value => value.SourceKey != key), value => Assert.False(value.PayloadIncluded));
+            Assert.True(RunService.Verify(manifest, output).Ok);
+        }
+        finally
+        {
+            TestSupport.DeleteDatabase(database);
+            DeleteDirectory(output);
+        }
+    }
+
+    [Fact]
     public void Manifest_property_order_does_not_change_its_hash()
     {
         var database = TestSupport.NewDatabasePath();

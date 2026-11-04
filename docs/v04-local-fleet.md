@@ -77,7 +77,7 @@ remote acknowledgement/retry semantics are not implemented here.
 | No-activity claim | always false in table and JSON |
 | Multi-host fixture loader | two hosts, 10 records each, metadata preserved |
 | Existing single-host tests | still pass |
-| Test suite | 80 tests passed |
+| Test suite | 81 tests passed |
 
 ## Limits
 

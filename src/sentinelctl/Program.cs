@@ -354,7 +354,10 @@ static void Run(Dictionary<string, string?> options)
     var schema = ResolveSchemaRoot(Get(options, "schema"));
     using var store = OpenStore(options);
     store.Initialize();
-    var manifest = RunService.Create(store, rules, schema, output, options.ContainsKey("include-payload"));
+    var selected = Get(options, "source-keys")?
+        .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    var includePayload = options.ContainsKey("include-payload") || selected is { Length: > 0 };
+    var manifest = RunService.Create(store, rules, schema, output, includePayload, selected);
     Console.WriteLine($"run_id: {manifest.RunId}");
     Console.WriteLine($"manifest: {Path.Combine(Path.GetFullPath(output), "manifest.json")}");
     Console.WriteLine($"content_sha256: {manifest.ContentSha256}");
@@ -585,7 +588,8 @@ static void Usage()
     Console.WriteLine("  purges    [--db <path>] [--limit <n>]");
     Console.WriteLine("  backup    --db <path> --output <path>");
     Console.WriteLine("  restore   --backup <path> [--db <path>]");
-    Console.WriteLine("  run       --db <path> --output <dir> [--rules <dir>] [--schema <dir>] [--include-payload]");
+    Console.WriteLine("  run       --db <path> --output <dir> [--rules <dir>] [--schema <dir>]");
+    Console.WriteLine("            [--include-payload] [--source-keys <key;key>]");
     Console.WriteLine("  verify-run --manifest <path> [--db <path>]");
     Console.WriteLine("  verify    [--db <path>] [--schema <dir>]");
 }

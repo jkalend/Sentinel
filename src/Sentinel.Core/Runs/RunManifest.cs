@@ -77,7 +77,8 @@ public sealed record RunExport(
     string Mode,
     bool PayloadIncluded,
     string? PayloadFile,
-    string? PayloadSha256);
+    string? PayloadSha256,
+    IReadOnlyList<string>? SelectedSourceKeys = null);
 
 public sealed record RunContent(
     RunIdentity Identity,

@@ -24,7 +24,8 @@ public static class RunService
         RuleSet rules,
         string schemaRoot,
         string outputDirectory,
-        bool includePayload = false)
+        bool includePayload = false,
+        IReadOnlyCollection<string>? selectedSourceKeys = null)
     {
         var output = Path.GetFullPath(outputDirectory);
         if (Directory.Exists(output) && Directory.EnumerateFileSystemEntries(output).Any())
@@ -83,6 +84,23 @@ public static class RunService
         Directory.CreateDirectory(output);
         string? payloadFile = null;
         string? payloadHash = null;
+        var selection = selectedSourceKeys is null
+            ? null
+            : new HashSet<string>(selectedSourceKeys, StringComparer.Ordinal);
+        if (selection is not null)
+        {
+            var missing = selection.Except(eventPins.Select(pin => pin.SourceKey), StringComparer.Ordinal).ToList();
+            if (missing.Count > 0)
+            {
+                throw new ArgumentException($"unknown source keys: {string.Join(", ", missing)}");
+            }
+
+            if (selection.Count == 0)
+            {
+                throw new ArgumentException("at least one source key is required for a selected payload.");
+            }
+        }
+
         if (includePayload)
         {
             payloadFile = PayloadFileName;
@@ -91,20 +109,26 @@ public static class RunService
             using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
             {
-                foreach (var pin in eventPins)
+                foreach (var pin in eventPins.Where(pin => selection is null || selection.Contains(pin.SourceKey)))
                 {
-                    var value = payloadByKey[pin.SourceKey];
-                    var payload = Payload(value);
-                    var line = CanonicalJson.Serialize(payload, ManifestOptions);
-                    writer.WriteLine(line);
+                    var payload = Payload(payloadByKey[pin.SourceKey]);
+                    writer.WriteLine(CanonicalJson.Serialize(payload, ManifestOptions));
                 }
             }
 
             eventPins = eventPins
-                .Select(pin => pin with
+                .Select(pin =>
                 {
-                    PayloadIncluded = true,
-                    PayloadSha256 = CanonicalJson.HashText(CanonicalJson.Serialize(Payload(payloadByKey[pin.SourceKey]), ManifestOptions))
+                    if (selection is not null && !selection.Contains(pin.SourceKey))
+                    {
+                        return pin;
+                    }
+
+                    return pin with
+                    {
+                        PayloadIncluded = true,
+                        PayloadSha256 = CanonicalJson.HashText(CanonicalJson.Serialize(Payload(payloadByKey[pin.SourceKey]), ManifestOptions))
+                    };
                 })
                 .ToList();
             payloadHash = CanonicalJson.HashFile(path);
@@ -114,7 +138,8 @@ public static class RunService
             includePayload ? "selected-payload" : "manifest-only",
             includePayload,
             payloadFile,
-            payloadHash);
+            payloadHash,
+            selection?.Order(StringComparer.Ordinal).ToList());
         var manifest = new RunManifest(
             Format,
             Guid.NewGuid().ToString("D"),
@@ -262,7 +287,7 @@ public static class RunService
         var databaseEvents = store?.ReadEvents().ToDictionary(value => value.SourceKey, StringComparer.Ordinal);
         foreach (var pin in manifest.Events)
         {
-            if (manifest.Export.PayloadIncluded)
+            if (pin.PayloadIncluded)
             {
                 if (payloads is null || !payloads.TryGetValue(pin.SourceKey, out var payload))
                 {
