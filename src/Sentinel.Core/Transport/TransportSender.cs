@@ -33,7 +33,7 @@ public sealed class TransportSender
         _token = token;
         _batchSize = Math.Clamp(batchSize, 1, 10_000);
         _retries = Math.Clamp(retries, 0, 20);
-        _client = client ?? new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _client = client ?? new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
     }
 
     public async Task<PushResult> PushAsync(CancellationToken cancellationToken = default)
@@ -47,21 +47,20 @@ public sealed class TransportSender
         store.Initialize();
         var stateKey = _collector.ToString();
         var ack = store.GetTransportAck(stateKey);
-        var events = store.ReadEventsAfter(ack, _batchSize);
-        if (events.Count == 0)
+        var candidates = store.ReadEventsAfter(ack, _batchSize);
+        if (candidates.Count == 0)
         {
             return new PushResult(0, 0, 0, ack);
         }
 
-        var first = events[0];
+        var first = candidates[0];
+        var events = candidates
+            .TakeWhile(value => string.Equals(value.SensorId, first.SensorId, StringComparison.Ordinal)
+                             && string.Equals(value.HostId, first.HostId, StringComparison.Ordinal)
+                             && string.Equals(value.Source.Channel, first.Source.Channel, StringComparison.Ordinal)
+                             && string.Equals(value.Source.IncarnationId, first.Source.IncarnationId, StringComparison.Ordinal))
+            .ToList();
         var last = events[^1];
-        if (events.Any(value => !string.Equals(value.SensorId, first.SensorId, StringComparison.Ordinal)
-                             || !string.Equals(value.HostId, first.HostId, StringComparison.Ordinal)
-                             || !string.Equals(value.Source.Channel, first.Source.Channel, StringComparison.Ordinal)
-                             || !string.Equals(value.Source.IncarnationId, first.Source.IncarnationId, StringComparison.Ordinal)))
-        {
-            throw new TransportException("source database contains more than one transport identity.");
-        }
 
         var gaps = store.ReadGaps();
         var bookmark = store.GetBookmark(first.Source.Channel);
@@ -126,7 +125,8 @@ public sealed class TransportSender
                     return new PushResult(1, ackValue.Accepted, ackValue.Duplicates, ackValue.LastSensorSequence);
                 }
             }
-            catch (Exception error) when (error is not TransportException || attempt < _retries)
+            catch (Exception error) when (!cancellationToken.IsCancellationRequested
+                                          && (error is not TransportException || attempt < _retries))
             {
                 lastError = error;
             }
