@@ -644,6 +644,28 @@ public sealed class SqliteEventStore : IDisposable
 
     public RetentionReport Purge(RetentionPolicy policy, DateTimeOffset? now = null, bool apply = true)
     {
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            try
+            {
+                return PurgeOnce(policy, now, apply);
+            }
+            catch (SqliteException error) when (error.SqliteErrorCode is 5 or 6)
+            {
+                if (attempt == 39)
+                {
+                    throw;
+                }
+
+                System.Threading.Thread.Sleep(250);
+            }
+        }
+
+        throw new InvalidOperationException("retention purge retry loop exited unexpectedly.");
+    }
+
+    private RetentionReport PurgeOnce(RetentionPolicy policy, DateTimeOffset? now, bool apply)
+    {
         policy.Validate();
         var at = (now ?? DateTimeOffset.UtcNow).ToUniversalTime();
         var eventCutoff = at.AddDays(-policy.EventDays);
