@@ -36,6 +36,14 @@ public sealed class TransportSender
         _client = client ?? new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
     }
 
+    public void ResetAck()
+    {
+        using var store = new SqliteEventStore(_databasePath);
+        store.Initialize();
+        var source = store.ReadBookmarks().FirstOrDefault()?.SourceId ?? string.Empty;
+        store.SetTransportAck(_collector.ToString(), source, 0);
+    }
+
     public async Task<PushResult> PushAsync(CancellationToken cancellationToken = default)
     {
         if (!File.Exists(_databasePath))

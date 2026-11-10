@@ -62,13 +62,7 @@ public class TransportTests
             await sender.PushAllAsync();
             var targetPath = Directory.GetFiles(root, "*.db").Single();
 
-            var stateKey = new Uri(new Uri(url), "v1/batches").ToString();
-            using (var sourceAgain = new SqliteEventStore(source))
-            {
-                sourceAgain.Initialize();
-                sourceAgain.SetTransportAck(stateKey, "Microsoft-Windows-Sysmon/Operational", 0);
-            }
-
+            sender.ResetAck();
             var retry = await sender.PushAllAsync();
             Assert.Equal(10, retry.Duplicates);
             using var target = new SqliteEventStore(targetPath, readOnly: true);

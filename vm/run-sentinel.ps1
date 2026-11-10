@@ -176,7 +176,7 @@ function Finish {
                 }
             }
 
-            foreach ($name in @('result.json', 'main-result.json', 'reboot-state.json', 'agent-run.txt', 'agent-run-first.txt', 'verify.txt', 'timeline.txt', 'replay.txt', 'probes.json', 'run.log', 'probes.out.txt', 'install.txt', 'uninstall.txt', 'installed-status-before.txt', 'installed-status-after-purge.txt', 'installed-status-after-append.txt', 'retention-backup.txt', 'retention-backup.db', 'retention-backup.db.manifest.json', 'retention-purge.txt', 'retention-restore.txt', 'retention-restored-status.txt', 'retention-restored.db')) {
+            foreach ($name in @('result.json', 'main-result.json', 'reboot-state.json', 'agent-run.txt', 'agent-run-first.txt', 'verify.txt', 'timeline.txt', 'replay.txt', 'probes.json', 'run.log', 'probes.out.txt', 'install.txt', 'uninstall.txt', 'installed-status-before.txt', 'installed-status-after-purge.txt', 'installed-status-after-append.txt', 'retention-backup.txt', 'retention-backup.db', 'retention-backup.db.manifest.json', 'retention-purge.txt', 'retention-restore.txt', 'retention-restored-status.txt', 'retention-restored.db', 'transport-offline.txt', 'transport-first.txt', 'transport-duplicate.txt', 'transport-incremental.txt', 'transport-noop.txt', 'transport-target-status.txt', 'transport-target.db', 'transport-collector.out.txt', 'transport-collector.err.txt')) {
                 $source = Join-Path $root $name
                 if (Test-Path -LiteralPath $source) {
                     Copy-Item -LiteralPath $source -Destination $destination -Force
@@ -680,6 +680,117 @@ try {
             $result.retention_manifest_events = if ($manifest) { $manifest.Counts.Events } else { $null }
             $result.retention_ok = $retentionOk
 
+            $transportOk = $false
+            $transportCollector = $null
+            $transportRoot = Join-Path $root 'transport-collector'
+            $transportPort = 18099
+            $transportOfflinePort = 18098
+            $transportToken = 'lab-transport-token'
+            $transportUrl = "http://127.0.0.1:$transportPort/"
+            $transportOfflineUrl = "http://127.0.0.1:$transportOfflinePort/"
+            if (Test-Path -LiteralPath $transportRoot) { Remove-Item -LiteralPath $transportRoot -Recurse -Force }
+            try {
+                $offlineResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                    'push', '--db', $installedDb, '--collector', $transportOfflineUrl,
+                    '--token', $transportToken, '--retries', '0')
+                $offlineResult.Output | Set-Content -LiteralPath (Join-Path $root 'transport-offline.txt') -Encoding UTF8
+
+                $collectorArgs = @(
+                    'collector', '--listen', $transportUrl, '--root', $transportRoot,
+                    '--token', $transportToken, '--rules', (Join-Path $root 'rules'))
+                $transportCollector = Start-Process -FilePath $ctl -ArgumentList $collectorArgs -PassThru -WindowStyle Hidden `
+                    -RedirectStandardOutput (Join-Path $root 'transport-collector.out.txt') `
+                    -RedirectStandardError (Join-Path $root 'transport-collector.err.txt')
+                Start-Sleep -Seconds 4
+
+                $firstResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                    'push', '--db', $installedDb, '--collector', $transportUrl,
+                    '--token', $transportToken, '--batch-size', '100', '--retries', '2')
+                $firstResult.Output | Set-Content -LiteralPath (Join-Path $root 'transport-first.txt') -Encoding UTF8
+                Start-Sleep -Seconds 2
+
+                $targetDb = Get-ChildItem -LiteralPath $transportRoot -Filter '*.db' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                $firstTargetEvents = -1
+                if ($targetDb) {
+                    $targetStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $targetDb.FullName)
+                    $targetStatus.Output | Set-Content -LiteralPath (Join-Path $root 'transport-target-status.txt') -Encoding UTF8
+                    $firstTargetEvents = Get-StatusNumber -Text $targetStatus.Output -Name 'events'
+                }
+
+                $duplicateResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                    'push', '--db', $installedDb, '--collector', $transportUrl,
+                    '--token', $transportToken, '--batch-size', '100', '--retries', '2', '--reset-ack')
+                $duplicateResult.Output | Set-Content -LiteralPath (Join-Path $root 'transport-duplicate.txt') -Encoding UTF8
+
+                Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', 'echo transport-append-probe') -Wait | Out-Null
+                Start-Sleep -Seconds 4
+                $incrementalResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                    'push', '--db', $installedDb, '--collector', $transportUrl,
+                    '--token', $transportToken, '--batch-size', '100', '--retries', '2')
+                $incrementalResult.Output | Set-Content -LiteralPath (Join-Path $root 'transport-incremental.txt') -Encoding UTF8
+
+                $noopResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                    'push', '--db', $installedDb, '--collector', $transportUrl,
+                    '--token', $transportToken, '--batch-size', '100', '--retries', '0')
+                $noopResult.Output | Set-Content -LiteralPath (Join-Path $root 'transport-noop.txt') -Encoding UTF8
+
+                if ($transportCollector) {
+                    Stop-Process -Id $transportCollector.Id -Force -ErrorAction SilentlyContinue
+                    $transportCollector = $null
+                    Start-Sleep -Seconds 1
+                }
+
+                $finalTargetEvents = -1
+                if ($targetDb) {
+                    $finalStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $targetDb.FullName)
+                    $finalTargetEvents = Get-StatusNumber -Text $finalStatus.Output -Name 'events'
+                    Copy-Item -LiteralPath $targetDb.FullName -Destination (Join-Path $root 'transport-target.db') -Force
+                }
+
+                $offlineExit = $offlineResult.ExitCode
+                $firstExit = $firstResult.ExitCode
+                $duplicateExit = $duplicateResult.ExitCode
+                $incrementalExit = $incrementalResult.ExitCode
+                $noopExit = $noopResult.ExitCode
+                $duplicateCount = if ($duplicateResult.Output -match 'duplicates:\s*(\d+)') { [int]$Matches[1] } else { 0 }
+                $incrementalAccepted = if ($incrementalResult.Output -match 'accepted:\s*(\d+)') { [int]$Matches[1] } else { 0 }
+                $noopBatches = if ($noopResult.Output -match 'batches:\s*(\d+)') { [int]$Matches[1] } else { -1 }
+                $transportOk = (
+                    $offlineExit -ne 0 -and
+                    $firstExit -eq 0 -and
+                    $firstTargetEvents -gt 0 -and
+                    $duplicateExit -eq 0 -and
+                    $duplicateCount -gt 0 -and
+                    $incrementalExit -eq 0 -and
+                    $incrementalAccepted -gt 0 -and
+                    $noopExit -eq 0 -and
+                    $noopBatches -eq 0 -and
+                    $finalTargetEvents -ge $firstTargetEvents
+                )
+                $result.transport_offline_exit = $offlineExit
+                $result.transport_offline = Limit-Text $offlineResult.Output
+                $result.transport_first_exit = $firstExit
+                $result.transport_first = Limit-Text $firstResult.Output
+                $result.transport_first_target_events = $firstTargetEvents
+                $result.transport_duplicate_exit = $duplicateExit
+                $result.transport_duplicates = $duplicateCount
+                $result.transport_duplicate = Limit-Text $duplicateResult.Output
+                $result.transport_incremental_exit = $incrementalExit
+                $result.transport_incremental_accepted = $incrementalAccepted
+                $result.transport_noop_exit = $noopExit
+                $result.transport_noop_batches = $noopBatches
+                $result.transport_final_target_events = $finalTargetEvents
+                $result.transport_ok = $transportOk
+            }
+            catch {
+                $result.transport_error = $_.Exception.Message
+            }
+            finally {
+                if ($transportCollector) {
+                    Stop-Process -Id $transportCollector.Id -Force -ErrorAction SilentlyContinue
+                }
+            }
+
             Stop-ScheduledTask -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
 
@@ -744,7 +855,8 @@ try {
                 $installedEvents -gt 0 -and
                 $readerAclOk -and
                 $outsiderDenied -and
-                $retentionOk
+                $retentionOk -and
+                $transportOk
             )
 
             $mainOk = (
@@ -756,7 +868,8 @@ try {
                 $captureExit -eq 0 -and
                 $captureFiles -gt 0 -and
                 $probeOk -and
-                $retentionOk
+                $retentionOk -and
+                $transportOk
             )
 
             if (-not $NoReboot) {
@@ -836,7 +949,8 @@ try {
                 $uninstallRestored -and
                 $readerRemoved -and
                 $installRemoved -and
-                $retentionOk
+                $retentionOk -and
+                $transportOk
             )
 
             $result.installer_exit = $installExit

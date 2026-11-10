@@ -181,6 +181,11 @@ static void Push(Dictionary<string, string?> options)
         Get(options, "token"),
         Integer(options, "batch-size", 100),
         Integer(options, "retries", 3));
+    if (options.ContainsKey("reset-ack"))
+    {
+        sender.ResetAck();
+    }
+
     var result = sender.PushAllAsync().GetAwaiter().GetResult();
     Console.WriteLine($"batches: {result.Batches}");
     Console.WriteLine($"accepted: {result.Accepted}");
@@ -629,7 +634,7 @@ static void Usage()
     Console.WriteLine("  fleet     --dbs <path;path> [--format table|json]");
     Console.WriteLine("  collector --listen <http://127.0.0.1:port/> --root <dir> [--rules <dir>]");
     Console.WriteLine("            [--token <token>] [--allow-sensors <id;id>]");
-    Console.WriteLine("  push      --db <path> --collector <http://127.0.0.1:port/> [--token <token>] [--batch-size 100] [--retries 3]");
+    Console.WriteLine("  push      --db <path> --collector <http://127.0.0.1:port/> [--token <token>] [--batch-size 100] [--retries 3] [--reset-ack]");
     Console.WriteLine("  ingest    --fixture <dir> [--db <path>] [--rules <dir>] [--sensor-id <id>] [--host-id <id>]");
     Console.WriteLine("  timeline  [--db <path>]");
     Console.WriteLine("  replay    [--db <path>] [--rules <dir>]");
