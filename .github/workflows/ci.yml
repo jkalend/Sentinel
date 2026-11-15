@@ -28,6 +28,15 @@ jobs:
         with:
           dotnet-version: 10.0.115
 
+      - name: Verify pinned SDK
+        shell: pwsh
+        run: |
+          $expected = (Get-Content global.json | ConvertFrom-Json).sdk.version
+          $actual = dotnet --version
+          if ($actual -ne $expected) {
+            throw "SDK mismatch: global.json pins $expected but dotnet resolves $actual"
+          }
+
       - name: Restore
         run: dotnet restore Sentinel.slnx
 
