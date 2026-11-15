@@ -12,7 +12,7 @@ and writes SHA256SUMS.txt plus release.json. No signing is performed.
 .\scripts\build-release.ps1
 .\scripts\build-release.ps1 -Version 0.4.3
 #>
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$Version,
     [string]$OutputDir,
@@ -24,22 +24,65 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repo = Split-Path -Parent $PSScriptRoot
+$repoFull = [IO.Path]::GetFullPath($repo).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 
-if (-not $Version) {
-    [xml]$props = Get-Content -LiteralPath (Join-Path $repo 'Directory.Build.props')
-    $Version = @($props.Project.PropertyGroup.Version | Where-Object { $_ }) | Select-Object -First 1
-    if (-not $Version) {
-        throw 'Directory.Build.props has no Version; pass -Version.'
-    }
+[xml]$props = Get-Content -LiteralPath (Join-Path $repo 'Directory.Build.props')
+$declaredVersion = @($props.Project.PropertyGroup.Version | Where-Object { $_ }) | Select-Object -First 1
+if (-not $declaredVersion) {
+    throw 'Directory.Build.props has no Version.'
+}
+$declaredVersion = $declaredVersion.Trim()
+
+if ($Version) {
+    $Version = $Version.Trim()
+}
+else {
+    $Version = $declaredVersion
+}
+
+if ($Version -ne $declaredVersion) {
+    throw "Version '$Version' does not match Directory.Build.props version '$declaredVersion'. Update the shared version before tagging or building."
+}
+if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$') {
+    throw "Version '$Version' is not a supported release version."
 }
 
 if (-not $OutputDir) {
     $OutputDir = Join-Path $repo "publish\release-$Version"
 }
 
-$output = [IO.Path]::GetFullPath($OutputDir)
+$outputFull = [IO.Path]::GetFullPath($OutputDir)
+$output = $outputFull.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+if ([string]::IsNullOrWhiteSpace($output)) {
+    throw 'OutputDir resolves to an empty path.'
+}
+$root = [IO.Path]::GetPathRoot($outputFull).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+if ([string]::Equals($output, $root, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "refusing to use a filesystem root as -OutputDir: $output"
+}
+if ([string]::Equals($output, $repoFull, [StringComparison]::OrdinalIgnoreCase) -or
+    $repoFull.StartsWith($output + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
+    $repoFull.StartsWith($output + [IO.Path]::AltDirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "refusing -OutputDir '$output': it contains the repository checkout."
+}
+if (Test-Path -LiteralPath $output -PathType Leaf) {
+    throw "-OutputDir '$output' points at a file."
+}
 if (Test-Path -LiteralPath $output) {
-    Remove-Item -LiteralPath $output -Recurse -Force
+    $hasChildren = [bool](Get-ChildItem -LiteralPath $output -Force -ErrorAction Stop | Select-Object -First 1)
+    $isReleaseDir = Test-Path -LiteralPath (Join-Path $output 'release.json')
+    if ($hasChildren -and -not $isReleaseDir) {
+        throw "refusing to delete '$output': it is not empty and has no release.json marker. Use a new or empty directory, or remove it manually."
+    }
+    if ($PSCmdlet.ShouldProcess($output, 'Remove existing release directory')) {
+        Remove-Item -LiteralPath $output -Recurse -Force
+    }
+}
+
+$expectedSdk = (Get-Content -LiteralPath (Join-Path $repo 'global.json') | ConvertFrom-Json).sdk.version
+$actualSdk = (& dotnet --version).Trim()
+if ($LASTEXITCODE -ne 0 -or $actualSdk -ne $expectedSdk) {
+    throw "dotnet resolves SDK '$actualSdk' but global.json requires '$expectedSdk'."
 }
 
 $deploy = Join-Path $output 'deploy'
@@ -98,7 +141,7 @@ catch {
     $dirty = $true
 }
 
-$sdk = (& dotnet --version).Trim()
+$sdk = $actualSdk
 $builtAt = (Get-Date).ToUniversalTime().ToString('o')
 
 $zipName = $null

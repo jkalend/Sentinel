@@ -6,6 +6,8 @@
   schemas. The version lives in `Directory.Build.props` and is repeated in
   `CHANGELOG.md`.
 - Tags use `vX.Y.Z` and must match the version in `Directory.Build.props`.
+  `build-release.ps1` rejects a `-Version` that differs from the shared value;
+  bump the props version before tagging.
 - `0.x` means lab/preview: the local event contract is frozen at
   `sentinel.local-event/v1`, but operational behavior, installer defaults, and
   transport may change between minor versions.
@@ -15,7 +17,9 @@
 
 ## Build
 
-Prerequisites: .NET SDK pinned by `global.json` (10.0.115) on Windows.
+Prerequisites: the exact .NET SDK pinned by `global.json` (10.0.115) on Windows.
+`rollForward` is `disable`, and both CI and `build-release.ps1` fail if
+`dotnet --version` differs.
 
 ```powershell
 ./scripts/build-release.ps1 -Version 0.4.3
@@ -60,9 +64,10 @@ The `0.x` package API is not frozen: types may change between minor versions.
 ## CI
 
 `.github/workflows/ci.yml` runs on Windows for pushes to `main`, pull requests,
-and `v*` tags: restore, Release build (warnings are errors), and the full test
-suite. Tag builds additionally run `build-release.ps1` and upload the zip,
-checksums, and `release.json`.
+and `v*` tags: verify the pinned SDK, restore, Release build (warnings are
+errors), and the full test suite. Tag builds additionally run
+`build-release.ps1`, upload the zip, packages, checksums, and `release.json`,
+and create the GitHub release.
 
 CI does not run the QEMU/KVM lab harness or any live Event Log collection. A
 green build is not evidence of live-source behavior.
