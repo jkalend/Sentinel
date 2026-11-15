@@ -81,13 +81,9 @@ public sealed class WindowsEventLogSource : IEventSource
 
         using (reader)
         {
+            SourceStartChecks.Validate(start);
             if (start.Mode == SourceStartMode.Bookmark)
             {
-                if (string.IsNullOrEmpty(start.BookmarkXml))
-                {
-                    throw new SourceBookmarkException("Bookmark resume requested without bookmark XML.");
-                }
-
                 try
                 {
                     reader.Seek(new EventBookmark(start.BookmarkXml), 1);
@@ -141,18 +137,12 @@ public sealed class WindowsEventLogSource : IEventSource
                     }
 
                     var parsed = SysmonXmlReader.Parse(xml);
-                    if (start.MaxEventRecordId is long snapshot
-                        && parsed.EventRecordId > snapshot)
+                    if (SourceStartChecks.IsBeyondSnapshot(start, parsed.EventRecordId))
                     {
                         yield break;
                     }
 
-                    if (start.ExpectedEventRecordId is long expected
-                        && parsed.EventRecordId < expected)
-                    {
-                        throw new SourceRecordRegressionException(
-                            $"EventRecordID regressed from bookmark {expected} to {parsed.EventRecordId}.");
-                    }
+                    SourceStartChecks.EnsureNotRegressed(start, parsed.EventRecordId);
 
                     var bookmarkXml = record.Bookmark?.BookmarkXml;
                     if (string.IsNullOrEmpty(bookmarkXml))

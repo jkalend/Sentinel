@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
   Disposable Sentinel V0.1 live-source validation.
@@ -10,7 +10,7 @@
   raw XML, copies results to the SENTINELOUT FAT volume, writes a serial
   result, and shuts down. No manual OOBE or click-through is accepted.
 #>
-param([switch]$Continue)
+param([switch]$Continue, [switch]$Resume, [switch]$NoReboot)
 
 $ErrorActionPreference = 'Stop'
 $root = 'C:\sentinel'
@@ -44,6 +44,22 @@ function Limit-Text {
     if ($null -eq $Text) { return '' }
     if ($Text.Length -le $Max) { return $Text }
     return $Text.Substring(0, $Max) + '...[truncated]'
+}
+
+function Get-StatusValue {
+    param([string]$Text, [string]$Name)
+    if ($Text -match "(?m)^$([regex]::Escape($Name)):\s*(.+)$") {
+        return $Matches[1].Trim()
+    }
+    return ''
+}
+
+function Get-StatusNumber {
+    param([string]$Text, [string]$Name)
+    $value = Get-StatusValue -Text $Text -Name $Name
+    $parsed = 0
+    if ([int]::TryParse($value, [ref]$parsed)) { return $parsed }
+    return -1
 }
 
 function Invoke-Captured {
@@ -160,7 +176,7 @@ function Finish {
                 }
             }
 
-            foreach ($name in @('result.json', 'agent-run.txt', 'agent-run-first.txt', 'verify.txt', 'timeline.txt', 'replay.txt', 'probes.json', 'run.log', 'probes.out.txt', 'install.txt', 'uninstall.txt')) {
+            foreach ($name in @('result.json', 'main-result.json', 'reboot-state.json', 'agent-run.txt', 'agent-run-first.txt', 'verify.txt', 'timeline.txt', 'replay.txt', 'probes.json', 'run.log', 'probes.out.txt', 'install.txt', 'uninstall.txt', 'installed-status-before.txt', 'installed-status-after-purge.txt', 'installed-status-after-append.txt', 'retention-backup.txt', 'retention-backup.db', 'retention-backup.db.manifest.json', 'retention-purge.txt', 'retention-restore.txt', 'retention-restored-status.txt', 'retention-restored.db', 'transport-offline.txt', 'transport-first.txt', 'transport-duplicate.txt', 'transport-incremental.txt', 'transport-noop.txt', 'transport-target-status.txt', 'transport-target.db', 'transport-collector.out.txt', 'transport-collector.err.txt')) {
                 $source = Join-Path $root $name
                 if (Test-Path -LiteralPath $source) {
                     Copy-Item -LiteralPath $source -Destination $destination -Force
@@ -184,6 +200,146 @@ function Finish {
     exit 0
 }
 
+function Invoke-Resume {
+    $result = [ordered]@{
+        ok = $false
+        stage = 'resume'
+        timestamp_utc = [DateTimeOffset]::UtcNow.ToString('O')
+        computer = $env:COMPUTERNAME
+        errors = @()
+    }
+
+    try {
+        $statePath = Join-Path $root 'reboot-state.json'
+        if (-not (Test-Path -LiteralPath $statePath)) {
+            throw "reboot state missing: $statePath"
+        }
+        $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        $installedRoot = [string]$state.installed_root
+        $installedDb = Join-Path $installedRoot 'data\sentinel.db'
+        $installedCtl = Join-Path $installedRoot 'ctl\sentinelctl.exe'
+        $installedSchema = Join-Path $installedRoot 'schemas\ocsf-1.9.0'
+        $preEvents = [int]$state.pre_events
+        $result.pre_events = $preEvents
+        $result.pre_bookmark = [string]$state.pre_bookmark
+        $result.pre_task_state = [string]$state.pre_task_state
+        $result.installer_before_reboot = [bool]$state.installer_ok
+
+        $taskState = 'missing'
+        $events = -1
+        $statusText = ''
+        $probeSent = $false
+        for ($attempt = 0; $attempt -lt 60; $attempt++) {
+            $task = Get-ScheduledTask -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
+            $taskState = if ($task) { $task.State.ToString() } else { 'missing' }
+            if (Test-Path -LiteralPath $installedDb) {
+                $statusResult = Invoke-Captured -FilePath $installedCtl -Arguments @('status', '--db', $installedDb)
+                $statusText = $statusResult.Output
+                $events = Get-StatusNumber -Text $statusText -Name 'events'
+            }
+            if ($taskState -eq 'Running' -and $events -gt $preEvents) {
+                break
+            }
+            if (-not $probeSent -and $attempt -ge 5) {
+                Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', 'echo reboot-resume-probe') -Wait | Out-Null
+                $probeSent = $true
+            }
+            Start-Sleep -Seconds 2
+        }
+
+        $result.resume_task_state = $taskState
+        $result.resume_events = $events
+        $result.resume_delta = $events - $preEvents
+        $result.resume_bookmark = Get-StatusValue -Text $statusText -Name 'bookmark'
+        $result.resume_status = Limit-Text $statusText
+        $result.main_ok = [bool]$state.main_ok
+        $taskDetails = Get-ScheduledTaskInfo -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
+        $result.resume_task_last_result = if ($taskDetails) { $taskDetails.LastTaskResult } else { $null }
+
+        $preBookmarkText = [string]$state.pre_bookmark
+        $postBookmarkText = [string]$result.resume_bookmark
+        $preIncarnation = if ($preBookmarkText -match 'incarnation=(\S+)') { $Matches[1] } else { '' }
+        $postIncarnation = if ($postBookmarkText -match 'incarnation=(\S+)') { $Matches[1] } else { '' }
+        $preRecord = if ($preBookmarkText -match 'record=(\d+)') { [long]$Matches[1] } else { -1 }
+        $postRecord = if ($postBookmarkText -match 'record=(\d+)') { [long]$Matches[1] } else { -1 }
+        $sameIncarnation = ($preIncarnation -ne '' -and $preIncarnation -eq $postIncarnation)
+        $bookmarkAdvanced = ($preRecord -ge 0 -and $postRecord -gt $preRecord)
+        $result.resume_same_incarnation = $sameIncarnation
+        $result.resume_bookmark_advanced = $bookmarkAdvanced
+
+        Stop-ScheduledTask -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+
+        if (Test-Path -LiteralPath $installedDb) {
+            New-Item -ItemType Directory -Path (Join-Path $root 'data') -Force | Out-Null
+            Copy-Item -LiteralPath $installedDb -Destination (Join-Path $root 'data\installed.db') -Force
+        }
+
+        $verifyResult = Invoke-Captured -FilePath $installedCtl -Arguments @('verify', '--db', $installedDb, '--schema', $installedSchema)
+        $verifyExit = $verifyResult.ExitCode
+        $result.resume_verify_exit = $verifyExit
+        $result.resume_verify = Limit-Text $verifyResult.Output
+
+        $uninstallScript = Join-Path $root 'scripts\uninstall-sentinel-agent.ps1'
+        $uninstallResult = Invoke-Captured -FilePath 'powershell.exe' -Arguments @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $uninstallScript,
+            '-InstallRoot', $installedRoot, '-ReaderUser', 'sentinel-reader',
+            '-TaskName', 'SentinelAgent', '-RemoveReader', '-RemoveData', '-RemoveInstall'
+        )
+        $uninstallExit = $uninstallResult.ExitCode
+        $uninstallOutput = $uninstallResult.Output
+        $uninstallOutput | Set-Content -LiteralPath (Join-Path $root 'uninstall.txt') -Encoding UTF8
+        $result.resume_uninstall_exit = $uninstallExit
+        $result.resume_uninstall = Limit-Text $uninstallOutput
+
+        $uninstallJson = $null
+        try { $uninstallJson = $uninstallOutput | ConvertFrom-Json }
+        catch { $result.resume_uninstall_parse_error = $_.Exception.Message }
+        $channelAfter = (& wevtutil.exe gl 'Microsoft-Windows-Sysmon/Operational' 2>&1 | Select-String -Pattern '^\s*channelAccess:\s*' | Select-Object -First 1)
+        $channelAfterText = if ($channelAfter) { $channelAfter.ToString() } else { '' }
+        $channelAfterAcl = ($channelAfterText -replace '^\s*channelAccess:\s*', '').Trim()
+        $oldAcl = [string]$state.channel_acl_before
+        $uninstallRestored = ([bool]($uninstallJson -and $uninstallJson.channel_acl_restored) -and $oldAcl -ne '' -and $channelAfterAcl -eq $oldAcl)
+        $userRightsRestored = [bool]($uninstallJson -and $uninstallJson.user_rights_restored)
+        $agentTaskRemoved = -not [bool](Get-ScheduledTask -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue)
+        $readerRemoved = -not [bool](Get-LocalUser -Name 'sentinel-reader' -ErrorAction SilentlyContinue)
+        $installRemoved = -not (Test-Path -LiteralPath $installedRoot)
+        $result.resume_uninstall_restored = $uninstallRestored
+        $result.resume_user_rights_restored = $userRightsRestored
+        $result.resume_agent_task_removed = $agentTaskRemoved
+        $result.resume_reader_removed = $readerRemoved
+        $result.resume_install_removed = $installRemoved
+
+        $result.resume_ok = (
+            $events -gt $preEvents -and
+            $sameIncarnation -and
+            $bookmarkAdvanced -and
+            $taskState -eq 'Running' -and
+            $verifyExit -eq 0 -and
+            [bool]$state.main_ok -and
+            [bool]$state.installer_ok -and
+            $uninstallExit -eq 0 -and
+            $uninstallRestored -and
+            $userRightsRestored -and
+            $agentTaskRemoved -and
+            $readerRemoved -and
+            $installRemoved
+        )
+        $result.ok = $result.resume_ok
+    }
+    catch {
+        $result.ok = $false
+        $result.error = $_.Exception.Message
+        $result.stack = $_.ScriptStackTrace
+        Write-Log "resume failed: $($_.Exception.Message)"
+    }
+    finally {
+        Unregister-ScheduledTask -TaskName 'SentinelResume' -Confirm:$false -ErrorAction SilentlyContinue
+        $result.resume_task_removed = -not [bool](Get-ScheduledTask -TaskName 'SentinelResume' -ErrorAction SilentlyContinue)
+        Finish $result
+    }
+}
+
 $result = [ordered]@{
     ok = $false
     stage = 'start'
@@ -192,6 +348,11 @@ $result = [ordered]@{
     errors = @()
 }
 $rebootRequested = $false
+
+if ($Resume) {
+    Invoke-Resume
+    return
+}
 
 try {
     Copy-Media
@@ -432,15 +593,211 @@ try {
             $taskState = if ($taskInfo) { $taskInfo.State.ToString() } else { 'missing' }
             $taskDetails = Get-ScheduledTaskInfo -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
             $taskLastResult = if ($taskDetails) { $taskDetails.LastTaskResult } else { $null }
+            $installedDb = Join-Path $installedRoot 'data\sentinel.db'
+
+            $installedStatusBefore = $null
+            $installedEvents = 0
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+                $installedStatusBefore = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $installedDb)
+                $installedEvents = Get-StatusNumber -Text $installedStatusBefore.Output -Name 'events'
+                if ($installedEvents -ge 20) { break }
+                Start-Sleep -Seconds 2
+            }
+            $installedBookmarkBefore = Get-StatusValue -Text $installedStatusBefore.Output -Name 'bookmark'
+            $installedStatusBefore.Output | Set-Content -LiteralPath (Join-Path $root 'installed-status-before.txt') -Encoding UTF8
+
+            $retentionBackupPath = Join-Path $root 'retention-backup.db'
+            $retentionRestoredPath = Join-Path $root 'retention-restored.db'
+            $retentionManifestPath = $retentionBackupPath + '.manifest.json'
+            foreach ($path in @($retentionBackupPath, $retentionManifestPath, $retentionRestoredPath)) {
+                if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+            }
+
+            $backupResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                'backup', '--db', $installedDb, '--output', $retentionBackupPath)
+            $backupResult.Output | Set-Content -LiteralPath (Join-Path $root 'retention-backup.txt') -Encoding UTF8
+
+            $purgeResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                'purge', '--db', $installedDb,
+                '--event-days', '0', '--raw-days', '0',
+                '--alert-days', '36500', '--health-days', '36500', '--gap-days', '36500',
+                '--keep-events', '5', '--apply')
+            $purgeResult.Output | Set-Content -LiteralPath (Join-Path $root 'retention-purge.txt') -Encoding UTF8
+
+            $postPurgeStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $installedDb)
+            $postPurgeStatus.Output | Set-Content -LiteralPath (Join-Path $root 'installed-status-after-purge.txt') -Encoding UTF8
+            $postPurgeEvents = Get-StatusNumber -Text $postPurgeStatus.Output -Name 'events'
+            $postPurgeBookmark = Get-StatusValue -Text $postPurgeStatus.Output -Name 'bookmark'
+
+            Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', 'echo retention-append-probe') -Wait | Out-Null
+            Start-Sleep -Seconds 6
+            $appendStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $installedDb)
+            $appendStatus.Output | Set-Content -LiteralPath (Join-Path $root 'installed-status-after-append.txt') -Encoding UTF8
+            $appendEvents = Get-StatusNumber -Text $appendStatus.Output -Name 'events'
+
+            $restoreResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                'restore', '--backup', $retentionBackupPath, '--db', $retentionRestoredPath)
+            $restoreResult.Output | Set-Content -LiteralPath (Join-Path $root 'retention-restore.txt') -Encoding UTF8
+            $restoredStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $retentionRestoredPath)
+            $restoredStatus.Output | Set-Content -LiteralPath (Join-Path $root 'retention-restored-status.txt') -Encoding UTF8
+            $restoredEvents = Get-StatusNumber -Text $restoredStatus.Output -Name 'events'
+            $manifest = $null
+            if (Test-Path -LiteralPath $retentionManifestPath) {
+                try { $manifest = Get-Content -LiteralPath $retentionManifestPath -Raw | ConvertFrom-Json } catch { }
+            }
+
+            $beforeIncarnation = if ($installedBookmarkBefore -match 'incarnation=(\S+)') { $Matches[1] } else { '' }
+            $afterIncarnation = if ($postPurgeBookmark -match 'incarnation=(\S+)') { $Matches[1] } else { '' }
+            $purgeDeleted = if ($purgeResult.Output -match 'data_events_deleted:\s*(\d+)') { [int]$Matches[1] } else { 0 }
+            $purgeRaw = if ($purgeResult.Output -match 'raw_xml_purged:\s*(\d+)') { [int]$Matches[1] } else { 0 }
+            $retentionOk = (
+                $installedEvents -gt 5 -and
+                $backupResult.ExitCode -eq 0 -and
+                $manifest -and
+                $purgeResult.ExitCode -eq 0 -and
+                $purgeDeleted -gt 0 -and
+                $purgeRaw -gt 0 -and
+                $postPurgeEvents -gt 0 -and
+                $beforeIncarnation -ne '' -and
+                $beforeIncarnation -eq $afterIncarnation -and
+                $appendEvents -gt $postPurgeEvents -and
+                $restoreResult.ExitCode -eq 0 -and
+                $manifest.Counts.Events -eq $restoredEvents
+            )
+            $result.retention_backup_exit = $backupResult.ExitCode
+            $result.retention_backup = Limit-Text $backupResult.Output
+            $result.retention_purge_exit = $purgeResult.ExitCode
+            $result.retention_purge = Limit-Text $purgeResult.Output
+            $result.retention_pre_events = $installedEvents
+            $result.retention_pre_bookmark = $installedBookmarkBefore
+            $result.retention_post_purge_events = $postPurgeEvents
+            $result.retention_post_purge_bookmark = $postPurgeBookmark
+            $result.retention_append_events = $appendEvents
+            $result.retention_restore_exit = $restoreResult.ExitCode
+            $result.retention_deleted = $purgeDeleted
+            $result.retention_raw_purged = $purgeRaw
+            $result.retention_restored_events = $restoredEvents
+            $result.retention_manifest_events = if ($manifest) { $manifest.Counts.Events } else { $null }
+            $result.retention_ok = $retentionOk
+
+            $transportOk = $false
+            $transportCollector = $null
+            $transportRoot = Join-Path $root 'transport-collector'
+            $transportPort = 18099
+            $transportOfflinePort = 18098
+            $transportToken = 'lab-transport-token'
+            $transportUrl = "http://127.0.0.1:$transportPort/"
+            $transportOfflineUrl = "http://127.0.0.1:$transportOfflinePort/"
+            if (Test-Path -LiteralPath $transportRoot) { Remove-Item -LiteralPath $transportRoot -Recurse -Force }
+            try {
+                $offlineResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                    'push', '--db', $installedDb, '--collector', $transportOfflineUrl,
+                    '--token', $transportToken, '--retries', '0')
+                $offlineResult.Output | Set-Content -LiteralPath (Join-Path $root 'transport-offline.txt') -Encoding UTF8
+
+                $collectorArgs = @(
+                    'collector', '--listen', $transportUrl, '--root', $transportRoot,
+                    '--token', $transportToken, '--rules', (Join-Path $root 'rules'))
+                $transportCollector = Start-Process -FilePath $ctl -ArgumentList $collectorArgs -PassThru -WindowStyle Hidden `
+                    -RedirectStandardOutput (Join-Path $root 'transport-collector.out.txt') `
+                    -RedirectStandardError (Join-Path $root 'transport-collector.err.txt')
+                Start-Sleep -Seconds 4
+
+                $firstResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                    'push', '--db', $installedDb, '--collector', $transportUrl,
+                    '--token', $transportToken, '--batch-size', '100', '--retries', '2')
+                $firstResult.Output | Set-Content -LiteralPath (Join-Path $root 'transport-first.txt') -Encoding UTF8
+                Start-Sleep -Seconds 2
+
+                $targetDb = Get-ChildItem -LiteralPath $transportRoot -Filter '*.db' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                $firstTargetEvents = -1
+                if ($targetDb) {
+                    $targetStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $targetDb.FullName)
+                    $targetStatus.Output | Set-Content -LiteralPath (Join-Path $root 'transport-target-status.txt') -Encoding UTF8
+                    $firstTargetEvents = Get-StatusNumber -Text $targetStatus.Output -Name 'events'
+                }
+
+                $duplicateResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                    'push', '--db', $installedDb, '--collector', $transportUrl,
+                    '--token', $transportToken, '--batch-size', '100', '--retries', '2', '--reset-ack')
+                $duplicateResult.Output | Set-Content -LiteralPath (Join-Path $root 'transport-duplicate.txt') -Encoding UTF8
+
+                Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', 'echo transport-append-probe') -Wait | Out-Null
+                Start-Sleep -Seconds 4
+                $incrementalResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                    'push', '--db', $installedDb, '--collector', $transportUrl,
+                    '--token', $transportToken, '--batch-size', '100', '--retries', '2')
+                $incrementalResult.Output | Set-Content -LiteralPath (Join-Path $root 'transport-incremental.txt') -Encoding UTF8
+
+                $noopResult = Invoke-Captured -FilePath $ctl -Arguments @(
+                    'push', '--db', $installedDb, '--collector', $transportUrl,
+                    '--token', $transportToken, '--batch-size', '100', '--retries', '0')
+                $noopResult.Output | Set-Content -LiteralPath (Join-Path $root 'transport-noop.txt') -Encoding UTF8
+
+                if ($transportCollector) {
+                    Stop-Process -Id $transportCollector.Id -Force -ErrorAction SilentlyContinue
+                    $transportCollector = $null
+                    Start-Sleep -Seconds 1
+                }
+
+                $finalTargetEvents = -1
+                if ($targetDb) {
+                    $finalStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $targetDb.FullName)
+                    $finalTargetEvents = Get-StatusNumber -Text $finalStatus.Output -Name 'events'
+                    Copy-Item -LiteralPath $targetDb.FullName -Destination (Join-Path $root 'transport-target.db') -Force
+                }
+
+                $offlineExit = $offlineResult.ExitCode
+                $firstExit = $firstResult.ExitCode
+                $duplicateExit = $duplicateResult.ExitCode
+                $incrementalExit = $incrementalResult.ExitCode
+                $noopExit = $noopResult.ExitCode
+                $duplicateCount = if ($duplicateResult.Output -match 'duplicates:\s*(\d+)') { [int]$Matches[1] } else { 0 }
+                $incrementalAccepted = if ($incrementalResult.Output -match 'accepted:\s*(\d+)') { [int]$Matches[1] } else { 0 }
+                $noopBatches = if ($noopResult.Output -match 'batches:\s*(\d+)') { [int]$Matches[1] } else { -1 }
+                $transportOk = (
+                    $offlineExit -ne 0 -and
+                    $firstExit -eq 0 -and
+                    $firstTargetEvents -gt 0 -and
+                    $duplicateExit -eq 0 -and
+                    $duplicateCount -gt 0 -and
+                    $incrementalExit -eq 0 -and
+                    $incrementalAccepted -gt 0 -and
+                    $noopExit -eq 0 -and
+                    $noopBatches -eq 0 -and
+                    $finalTargetEvents -ge $firstTargetEvents
+                )
+                $result.transport_offline_exit = $offlineExit
+                $result.transport_offline = Limit-Text $offlineResult.Output
+                $result.transport_first_exit = $firstExit
+                $result.transport_first = Limit-Text $firstResult.Output
+                $result.transport_first_target_events = $firstTargetEvents
+                $result.transport_duplicate_exit = $duplicateExit
+                $result.transport_duplicates = $duplicateCount
+                $result.transport_duplicate = Limit-Text $duplicateResult.Output
+                $result.transport_incremental_exit = $incrementalExit
+                $result.transport_incremental_accepted = $incrementalAccepted
+                $result.transport_noop_exit = $noopExit
+                $result.transport_noop_batches = $noopBatches
+                $result.transport_final_target_events = $finalTargetEvents
+                $result.transport_ok = $transportOk
+            }
+            catch {
+                $result.transport_error = $_.Exception.Message
+            }
+            finally {
+                if ($transportCollector) {
+                    Stop-Process -Id $transportCollector.Id -Force -ErrorAction SilentlyContinue
+                }
+            }
+
             Stop-ScheduledTask -TaskName 'SentinelAgent' -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
 
-            $installedDb = Join-Path $installedRoot 'data\sentinel.db'
             $installedTimeline = ''
             $installedTimelineExit = -1
             $installedVerify = ''
             $installedVerifyExit = -1
-            $installedEvents = 0
             $agentLogPath = Join-Path $installedRoot 'data\agent.log'
             $agentLog = if (Test-Path -LiteralPath $agentLogPath) { Get-Content -LiteralPath $agentLogPath -Raw } else { '' }
             $installedDbExists = Test-Path -LiteralPath $installedDb
@@ -448,7 +805,6 @@ try {
                 $installedTimelineResult = Invoke-Captured -FilePath $ctl -Arguments @('timeline', '--db', $installedDb)
                 $installedTimelineExit = $installedTimelineResult.ExitCode
                 $installedTimeline = $installedTimelineResult.Output
-                $installedEvents = @($installedTimeline -split "`n" | Where-Object { $_ -match '^\s*\d+\s' }).Count
                 $installedVerifyResult = Invoke-Captured -FilePath $ctl -Arguments @('verify', '--db', $installedDb, '--schema', (Join-Path $root 'schemas\ocsf-1.9.0'))
                 $installedVerifyExit = $installedVerifyResult.ExitCode
                 $installedVerify = $installedVerifyResult.Output
@@ -492,6 +848,77 @@ try {
                 Remove-Item -LiteralPath $outsiderDir -Recurse -Force -ErrorAction SilentlyContinue
             }
 
+            $preInstallerOk = (
+                $installExit -eq 0 -and
+                $installedTimelineExit -eq 0 -and
+                $installedVerifyExit -eq 0 -and
+                $installedEvents -gt 0 -and
+                $readerAclOk -and
+                $outsiderDenied -and
+                $retentionOk -and
+                $transportOk
+            )
+
+            $mainOk = (
+                $firstRunExit -eq 0 -and
+                $runExit -eq 0 -and
+                $verifyExit -eq 0 -and
+                $timelineExit -eq 0 -and
+                $replayExit -eq 0 -and
+                $captureExit -eq 0 -and
+                $captureFiles -gt 0 -and
+                $probeOk -and
+                $retentionOk -and
+                $transportOk
+            )
+
+            if (-not $NoReboot) {
+                $preStatus = Invoke-Captured -FilePath $ctl -Arguments @('status', '--db', $installedDb)
+                $preEvents = Get-StatusNumber -Text $preStatus.Output -Name 'events'
+                if ($preEvents -lt 0) { $preEvents = $installedEvents }
+                $preBookmark = Get-StatusValue -Text $preStatus.Output -Name 'bookmark'
+                $state = [ordered]@{
+                    main_ok = $mainOk
+                    pre_events = $preEvents
+                    pre_bookmark = $preBookmark
+                    pre_task_state = $taskState
+                    installed_root = $installedRoot
+                    installer_ok = $preInstallerOk
+                    channel_acl_before = if ($installData) { $installData.channel_acl_before } else { '' }
+                    reader_sid = $readerSid
+                    timestamp_utc = [DateTimeOffset]::UtcNow.ToString('O')
+                }
+                $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $root 'reboot-state.json') -Encoding UTF8
+
+                $resumeScript = Join-Path $root 'run-sentinel.ps1'
+                $resumeAction = New-ScheduledTaskAction `
+                    -Execute (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
+                    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$resumeScript`" -Resume" `
+                    -WorkingDirectory $root
+                $resumeTrigger = New-ScheduledTaskTrigger -AtStartup
+                $resumeSettings = New-ScheduledTaskSettingsSet `
+                    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                    -ExecutionTimeLimit (New-TimeSpan -Minutes 15) `
+                    -MultipleInstances IgnoreNew -StartWhenAvailable
+                $resumePrincipal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+                Register-ScheduledTask -TaskName 'SentinelResume' -Action $resumeAction -Trigger $resumeTrigger `
+                    -Settings $resumeSettings -Principal $resumePrincipal -Force | Out-Null
+
+                $result.reboot_resume = $true
+                $result.main_ok = $mainOk
+                $result.pre_events = $preEvents
+                $result.pre_bookmark = $preBookmark
+                $result.installer_before_reboot = $preInstallerOk
+                $result.resume_task_registered = $true
+                $result | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $root 'main-result.json') -Encoding UTF8
+                Write-Log "resume task registered; pre_events=$preEvents; rebooting"
+                Write-Serial 'SENTINEL_STAGE_RESUME_REBOOT'
+                $rebootRequested = $true
+                Start-Sleep -Seconds 2
+                shutdown.exe /r /t 5 /f
+                return
+            }
+
             $uninstallResult = Invoke-Captured -FilePath 'powershell.exe' -Arguments @(
                 '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $uninstallScript,
                 '-InstallRoot', $installedRoot, '-ReaderUser', 'sentinel-reader',
@@ -504,7 +931,8 @@ try {
             $channelAfterUninstallText = if ($channelAfterUninstall) { $channelAfterUninstall.ToString() } else { '' }
             $oldAcl = if ($installData -and $installData.channel_acl_before) { $installData.channel_acl_before } else { '' }
             $uninstallJson = $null
-            try { $uninstallJson = $uninstallOutput | ConvertFrom-Json } catch { }
+            try { $uninstallJson = $uninstallOutput | ConvertFrom-Json }
+            catch { $result.uninstall_parse_error = $_.Exception.Message }
             $channelAfterUninstallAcl = ($channelAfterUninstallText -replace '^\s*channelAccess:\s*', '').Trim()
             $uninstallRestored = ([bool]($uninstallJson -and $uninstallJson.channel_acl_restored) -and $oldAcl -ne '' -and $channelAfterUninstallAcl -eq $oldAcl)
             $readerRemoved = -not [bool](Get-LocalUser -Name 'sentinel-reader' -ErrorAction SilentlyContinue)
@@ -520,7 +948,9 @@ try {
                 $uninstallExit -eq 0 -and
                 $uninstallRestored -and
                 $readerRemoved -and
-                $installRemoved
+                $installRemoved -and
+                $retentionOk -and
+                $transportOk
             )
 
             $result.installer_exit = $installExit

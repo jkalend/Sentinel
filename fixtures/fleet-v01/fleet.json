@@ -1,0 +1,22 @@
+{
+  "format": "sentinel.fleet-fixture/v1",
+  "channel": "Microsoft-Windows-Sysmon/Operational",
+  "hosts": [
+    {
+      "sensor_id": "sensor-a",
+      "host_id": "host-a",
+      "host_name": "alpha",
+      "clock_offset_ms": 0,
+      "clock_uncertainty_ms": 0,
+      "fixture": "host-a"
+    },
+    {
+      "sensor_id": "sensor-b",
+      "host_id": "host-b",
+      "host_name": "beta",
+      "clock_offset_ms": 1500,
+      "clock_uncertainty_ms": 250,
+      "fixture": "host-b"
+    }
+  ]
+}

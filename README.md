@@ -1,8 +1,8 @@
-# Sentinel
+﻿# Sentinel
 
 > Local-first security telemetry and detection: collect, normalize, detect, and investigate.
 
-**Status: V0.1 live-source lab pass, including the least-privileged reader and local installer.** A disposable Windows 11 Enterprise Evaluation 26H2 VM (build 26300, QEMU/KVM, built-in Sysmon) ran the live reader, mapper, three rules, SQLite store, replay, timeline, schema verifier, and the install/uninstall scripts. The final harness result is `ok:true`: the run accepted 650 records across a first bounded run and bookmark resume against a retained 1,428-event store, produced 6 alerts and 0 gaps, verified with 0 schema errors, replayed 6/6, and copied a 1,448-file capture to the SATA result volume. The installed `sentinel-reader` task ran and stored 117 events, the channel ACL contained only Administrators/SYSTEM/reader, an outsider query was denied (exit 5), and teardown restored the channel ACL and local user rights. Reboot-resume, a clean-store rerun, retention/backup, and a 1,000+ record performance measurement remain open; the harness now clears prior data before each run. Engine ownership and the C#-only first artifact are decided ([D-0015](https://github.com/jkalend/project-planning/blob/main/decisions/0015-sentinel-engine-ownership.md), [D-0014](https://github.com/jkalend/project-planning/blob/main/decisions/0014-language-artifact-policy.md)).
+**Status: V0.1–V0.4 lab/fixture validation; release 0.4.3 adds CI, versioned bundles, and scheduled retention. Live V0.4.2 transport remains unrun.** A disposable Windows 11 Enterprise Evaluation 26H2 VM (build 26300, QEMU/KVM, built-in Sysmon) now runs the V0.2 first slice end to end. The latest harness cleared `data`/`capture` and returned `ok:true`: 2,710 clean-store events, 14 alerts, 0 gaps, 0 schema errors, replay 14/14, and a 2,972-file SATA capture. The installed `sentinel-reader` task stored 12 events before reboot and 308 at the continuation check (310 after the agent stopped), resumed the same sensor incarnation/bookmark, remained Running, and was torn down with the channel ACL, user rights, reader task, and resume task restored/removed. Earlier V0.1 evidence includes the 650-record retained-store run, the 1,428-event store, and the reader/task/installer checks. The retention/backup first implementation is host-verified against fixtures: audited age/size purge with raw-XML purge and timeline tombstones, plus online backup and fail-closed restore. V0.3 reproducible investigation runs and bounded local export are also host-verified: canonical manifests pin source/event/time/clock/mapping/schema/rule/engine identities, with manifest-only default and explicit payload export verification. V0.4 adds explicit local enrollment and a read-only multi-store host/coverage view that flags clock uncertainty and missing telemetry. V0.4.1 adds a versioned HTTP push envelope with token/allowlist checks, idempotent collector ingest, acknowledgement after commit, retry/offline behavior, and per-sensor collector stores consumable by the fleet view. V0.4.2 adds an in-guest transport harness and ISO; live execution is pending because Docker currently has no usable KVM. Rule packs, fleet configuration, and overhead measurements remain open. Engine ownership and the C#-only first artifact are decided ([D-0015](https://github.com/jkalend/project-planning/blob/main/decisions/0015-sentinel-engine-ownership.md), [D-0014](https://github.com/jkalend/project-planning/blob/main/decisions/0014-language-artifact-policy.md)).
 
 Canonical design: [sentinel](https://github.com/jkalend/project-planning/blob/main/projects/sentinel.md)
 
@@ -77,11 +77,19 @@ Sentinel/
 ├─ fixtures/sysmon-v01/       synthetic Sysmon XML + ground truth
 ├─ fixtures/sysmon-v01-live/  selected raw XML from the lab capture
 ├─ tests/Sentinel.Core.Tests/
-├─ scripts/                   Sysmon profile, probes, local install/uninstall
+├─ scripts/                   Sysmon profile, probes, install/uninstall, release bundle
+├─ .github/workflows/ci.yml   build, test, tag-only release bundle
 ├─ vm/                        unattended Windows lab harness (QEMU/BIOS)
+├─ CHANGELOG.md               release history and known limits
+├─ docs/release.md            versioning, artifacts, verification checklist
 ├─ docs/local-event-v1.md     frozen local contract
 ├─ docs/v01-windows-vm-runbook.md
+├─ docs/v02-retention-backup.md
 ├─ docs/v02-plan.md           retention, multi-sensor, rule packs, fleet config
+├─ docs/v03-runs-export.md    reproducible run and export contract
+├─ docs/v04-local-fleet.md    local enrollment and fleet view
+├─ docs/v04.1-remote-transport.md  bounded push/collector contract
+├─ docs/v04.2-in-guest-transport.md  in-guest transport harness
 └─ README.md
 ```
 
@@ -95,6 +103,13 @@ dotnet run --project src/sentinelctl -- ingest --fixture fixtures/sysmon-v01 --d
 dotnet run --project src/sentinelctl -- timeline --db data/sentinel.db
 dotnet run --project src/sentinelctl -- replay --db data/sentinel.db
 dotnet run --project src/sentinelctl -- verify --db data/sentinel.db
+dotnet run --project src/sentinelctl -- purge --db data/sentinel.db --now 2026-12-31T00:00:00Z
+dotnet run --project src/sentinelctl -- backup --db data/sentinel.db --output backups/sentinel.db
+dotnet run --project src/sentinelctl -- restore --backup backups/sentinel.db --db data/sentinel.db
+dotnet run --project src/sentinelctl -- run --db data/sentinel.db --output runs/fixture-a
+dotnet run --project src/sentinelctl -- verify-run --manifest runs/fixture-a/manifest.json --db data/sentinel.db
+dotnet run --project src/sentinelctl -- fleet --dbs "data/a.db;data/b.db"
+dotnet run --project src/sentinelctl -- collector --listen "http://127.0.0.1:18099/" --root data/collector
 ```
 
 The fixture contains 10 records: 3 alerts, 1 source-health record, 0 gaps. Re-ingesting the same fixture reports 10 duplicates and leaves the event, alert, and gap counts unchanged. `verify` recomputes each raw XML hash and validates the stored OCSF event against the pinned 1.9.0 schema requirements.
@@ -112,11 +127,19 @@ $pw = Read-Host -AsSecureString
 `deploy` must contain `agent/`, `ctl/`, `rules/`, and `schemas/ocsf-1.9.0/`.
 The installer creates the local `sentinel-reader`, restricts the
 `Microsoft-Windows-Sysmon/Operational` channel to Administrators/SYSTEM/reader,
-grants the reader modify access only under `data`/`capture`, and registers a
-startup scheduled task and grants the reader the local batch-logon right needed
+grants the reader modify access only under `data`/`capture`, registers a
+startup scheduled task, and grants the reader the local batch-logon right needed
 for a non-interactive start. The task stores the reader password; treat it as a
-local secret. Data is preserved when uninstalling unless `-RemoveData` is
-explicit, and teardown restores the saved channel ACL and user-rights policy:
+local secret.
+
+It also registers a daily `SentinelRetention` task (SYSTEM, 03:15) that runs
+`sentinelctl purge --apply` with 30-day normalized events, 7-day raw XML, and
+90-day alerts/source-health/gaps, keeping at least 1,000 events within a 10 GiB
+cap. Change the day values with `-EventDays`, `-RawDays`, `-AlertDays`,
+`-HealthDays`, and `-GapDays`; skip the task with `-NoRetentionTask` or
+`-NoTask`. A sensor is unbounded only when you opt out. Data is preserved when
+uninstalling unless `-RemoveData` is explicit, uninstall removes both tasks, and
+teardown restores the saved channel ACL and user-rights policy:
 
 ```powershell
 .\scripts\uninstall-sentinel-agent.ps1 -RemoveReader
@@ -124,6 +147,17 @@ explicit, and teardown restores the saved channel ACL and user-rights policy:
 
 The scripts are in [`scripts/`](scripts/); the full manual procedure remains in
 [the V0.1 Windows runbook](docs/v01-windows-vm-runbook.md).
+
+## Versioning and releases
+
+One version covers the agent, control CLI, rules, and schemas. Tags are
+`vX.Y.Z`, artifacts are built by
+[`scripts/build-release.ps1`](scripts/build-release.ps1), and CI publishes the
+zip, preview `Sentinel.Core`/`Sentinel.Windows` NuGet packages,
+`SHA256SUMS.txt`, and `release.json` only for tags. See
+[CHANGELOG.md](CHANGELOG.md) for release history and
+[docs/release.md](docs/release.md) for the artifact layout, verification
+checklist, and explicit non-claims. Artifacts are unsigned.
 
 ## Live collection (lab-validated; reader ACL/installer exercised)
 
@@ -133,9 +167,10 @@ The scripts are in [`scripts/`](scripts/); the full manual procedure remains in
 dotnet run --project src/sentinel-agent -- channel
 dotnet run --project src/sentinel-agent -- run --db data/live.db --max-records 20
 dotnet run --project src/sentinel-agent -- capture --output data/capture --max-records 1000
+dotnet run --project src/sentinelctl -- status --db data/live.db
 ```
 
-The reader, bookmark resume, channel configuration capture, config-generation handling, live rule evaluation, install/teardown, and a least-privileged reader task are exercised on a disposable Windows 11 Enterprise Evaluation 26H2 VM. The unattended lab harness is in [`vm/`](vm/README.md): it boots the VM under QEMU/KVM with SeaBIOS, applies `autounattend.xml`, installs and configures built-in Sysmon, runs the live reader/probes, then provisions the reader task with [`scripts/install-sentinel-agent.ps1`](scripts/install-sentinel-agent.ps1), checks an outsider denial, and tears it down. Results go to the SATA FAT volume and COM1. The evidence, hashes, and remaining reboot/clean-store limits are in [V0.1 live validation](docs/v01-live-validation.md); the manual procedure is in [the V0.1 Windows VM runbook](docs/v01-windows-vm-runbook.md). The selected real events are in [`fixtures/sysmon-v01-live/`](fixtures/sysmon-v01-live/), and the next bounded problems are in [V0.2 design notes](docs/v02-plan.md).
+The reader, bookmark resume, channel configuration capture, config-generation handling, live rule evaluation, install/teardown, reboot-resume, and a least-privileged reader task are exercised on a disposable Windows 11 Enterprise Evaluation 26H2 VM. The unattended lab harness is in [`vm/`](vm/README.md): it boots the VM under QEMU/KVM with SeaBIOS, applies `autounattend.xml`, installs and configures built-in Sysmon, runs the live reader/probes, provisions the reader task with [`scripts/install-sentinel-agent.ps1`](scripts/install-sentinel-agent.ps1), checks an outsider denial, reboots, verifies bookmark/event continuity, and tears it down. Results go to the SATA FAT volume and COM1. The clean-store/reboot evidence is in [V0.2 reboot-resume validation](docs/v02-reboot-resume.md); V0.1 evidence and limits are in [V0.1 live validation](docs/v01-live-validation.md); the manual procedure is in [the V0.1 Windows VM runbook](docs/v01-windows-vm-runbook.md). The selected real events are in [`fixtures/sysmon-v01-live/`](fixtures/sysmon-v01-live/), and the next bounded problems are in [V0.2 design notes](docs/v02-plan.md).
 
 **Strict Event ID 3:** Sysmon Event ID 3 has no success field. Live records without independently observed ground truth stay OCSF `activity_id=0` (Unknown); only a controlled, confirmed outbound TCP connection maps to `Open`. The network rule therefore does not fire on unproven live traffic.
 
@@ -154,6 +189,13 @@ Bespoke enforcement — host firewall, antivirus, EDR containment, IDS/IPS, WAF,
 
 ## Planning and research
 
+- [Release process and verification](docs/release.md)
+- [Changelog](CHANGELOG.md)
+- [V0.4.2 in-guest transport harness](docs/v04.2-in-guest-transport.md)
+- [V0.4.1 transport validation](docs/v04.1-remote-transport.md)
+- [V0.4 local fleet validation](docs/v04-local-fleet.md)
+- [V0.3 run/export validation](docs/v03-runs-export.md)
+- [V0.2 retention/backup validation](docs/v02-retention-backup.md)
 - [Local V0.2 design notes](docs/v02-plan.md)
 - [Ecosystem design](https://github.com/jkalend/project-planning/blob/main/projects/sentinel.md)
 - [Engine ownership decision](https://github.com/jkalend/project-planning/blob/main/decisions/0015-sentinel-engine-ownership.md)

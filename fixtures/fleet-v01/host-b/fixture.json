@@ -1,0 +1,34 @@
+{
+  "channel": "Microsoft-Windows-Sysmon/Operational",
+  "incarnation_id": "c1d2e3f4-5a6b-4c7d-8e9f-333333333333",
+  "config_generation": 1,
+  "sensor_id": "sensor-b",
+  "host_id": "host-b",
+  "network_ground_truth": [
+    {
+      "event_record_id": 1002,
+      "outcome": "established_outbound",
+      "note": "Synthetic client completed a TCP connect to the controlled loopback listener."
+    },
+    {
+      "event_record_id": 1004,
+      "outcome": "established_outbound",
+      "note": "Synthetic browser completed a TCP connect to a controlled remote listener."
+    },
+    {
+      "event_record_id": 1006,
+      "outcome": "inbound_listener",
+      "note": "Synthetic listener accepted an inbound connection; roles are not outbound."
+    },
+    {
+      "event_record_id": 1007,
+      "outcome": "refused",
+      "note": "Synthetic client attempted TCP to a closed loopback port."
+    },
+    {
+      "event_record_id": 1010,
+      "outcome": "established_outbound",
+      "note": "Synthetic PowerShell completed a TCP connect to a controlled remote listener on 443."
+    }
+  ]
+}

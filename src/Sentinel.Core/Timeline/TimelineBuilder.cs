@@ -1,12 +1,13 @@
 using System.Globalization;
 using System.Text;
 using Sentinel.Core.Model;
+using Sentinel.Core.Store;
 
 namespace Sentinel.Core.Timeline;
 
 public static class TimelineBuilder
 {
-    public static string Render(IReadOnlyList<LocalEvent> events)
+    public static string Render(IReadOnlyList<LocalEvent> events, IReadOnlyList<PurgedRange>? purgedRanges = null)
     {
         var processIndex = events
             .Where(e => e.Kind == RecordKind.Data
@@ -16,13 +17,26 @@ public static class TimelineBuilder
             .ToDictionary(g => g.Key, g => g.First());
 
         var builder = new StringBuilder();
+        if (purgedRanges is not null)
+        {
+            foreach (var range in purgedRanges)
+            {
+                builder.AppendLine(
+                    $"PURGED sequences {range.FirstSequence}-{range.LastSequence} " +
+                    $"({range.EventCount} events, {range.FirstTime:O}..{range.LastTime:O}); " +
+                    $"audit {range.PurgeId}");
+            }
+        }
+
         builder.AppendLine("SEQ  EVENT_TIME(UTC)          KIND          SUMMARY");
         foreach (var value in events.OrderBy(e => e.SensorSequence))
         {
             var time = value.Time.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
             var summary = value.Kind switch
             {
-                RecordKind.SourceHealth => $"source-health: EventID {value.Source.EventId}; raw preserved",
+                RecordKind.SourceHealth => value.RawPurgedAt is null
+                    ? $"source-health: EventID {value.Source.EventId}; raw preserved"
+                    : $"source-health: EventID {value.Source.EventId}; raw purged at {value.RawPurgedAt:O}",
                 _ => value.OcsfClassUid switch
                 {
                     Ocsf.OcsfMapper.ProcessActivityClassUid => ProcessSummary(value, processIndex),

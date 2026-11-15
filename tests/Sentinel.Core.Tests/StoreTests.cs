@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Sentinel.Core.Model;
 using Sentinel.Core.Store;
+using Sentinel.Core.Sysmon;
 
 namespace Sentinel.Core.Tests;
 
@@ -50,6 +51,49 @@ public class StoreTests
         {
             TestSupport.DeleteDatabase(path);
         }
+    }
+
+    [Fact]
+    public void Read_only_store_reports_counts_without_writing()
+    {
+        var path = TestSupport.NewDatabasePath();
+        try
+        {
+            using (var store = new SqliteEventStore(path))
+            {
+                store.Initialize();
+                var fixture = TestSupport.Fixture();
+                store.EnsureIdentity(fixture.SensorId, fixture.HostId);
+                var value = TestSupport.ToLocal(fixture, fixture.Records.Single(r => r.EventRecordId == 1001));
+                var bookmark = new BookmarkUpdate(fixture.Channel, fixture.IncarnationId, fixture.ConfigGeneration, 1001, 1001);
+                store.Append(value, [], bookmark);
+            }
+
+            using var readOnly = new SqliteEventStore(path, readOnly: true);
+            var (counts, readBookmark) = readOnly.GetStatus(SysmonXmlReader.SysmonChannel);
+            Assert.Equal(1, counts.Events);
+            Assert.Equal(0, counts.Alerts);
+            Assert.Equal(0, counts.Gaps);
+            Assert.Equal(1001, readBookmark!.EventRecordId);
+
+            var readFixture = TestSupport.Fixture();
+            var second = TestSupport.ToLocal(readFixture, readFixture.Records.Single(r => r.EventRecordId == 1002));
+            var secondBookmark = new BookmarkUpdate(readFixture.Channel, readFixture.IncarnationId, readFixture.ConfigGeneration, 1002, 1001);
+            Assert.Throws<Microsoft.Data.Sqlite.SqliteException>(() => readOnly.Append(second, [], secondBookmark));
+        }
+        finally
+        {
+            TestSupport.DeleteDatabase(path);
+        }
+    }
+
+    [Fact]
+    public void Read_only_store_does_not_create_a_missing_database()
+    {
+        var path = TestSupport.NewDatabasePath();
+        Assert.False(File.Exists(path));
+        Assert.Throws<Microsoft.Data.Sqlite.SqliteException>(() => new SqliteEventStore(path, readOnly: true));
+        Assert.False(File.Exists(path));
     }
 
     [Fact]

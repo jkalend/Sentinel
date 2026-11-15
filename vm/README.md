@@ -1,4 +1,4 @@
-# Sentinel V0.1 Windows VM harness
+# Sentinel Windows VM harness
 
 This directory drives one disposable Windows 11 Enterprise Eval 26H2 VM without manual OOBE input. It is adapted from PeerVault's proven BIOS/QEMU clean-client drill: a data-only test ISO supplies `autounattend.xml`, the Sentinel binaries, rules, schemas, and the probe script; a writable FAT disk receives results; COM1 receives a JSON result; the guest shuts down when done.
 
@@ -11,20 +11,23 @@ This directory drives one disposable Windows 11 Enterprise Eval 26H2 VM without 
 
 ## Validation status
 
-The automated harness passed with `ok:true` on 2026-11-03 on Windows 11 Enterprise Evaluation, build 26300. The latest run accepted 650 records across first/resume against a retained 1,428-event store, produced 6 alerts and 0 gaps, verified with 0 schema errors, replayed 6/6, and copied a 1,448-file capture plus logs to the SATA result volume. It then installed the agent under `sentinel-reader`: the task ran and stored 117 events/2 alerts, the channel ACL contained only Administrators/SYSTEM/reader, an outsider query was denied (exit 5), and teardown restored the channel ACL and user rights. See [`docs/v01-live-validation.md`](../docs/v01-live-validation.md) for evidence hashes and limits.
+The automated harness passed with `ok:true` on 2026-11-03 on Windows 11 Enterprise Evaluation, build 26300. The latest V0.2 slice cleared `data`/`capture` and produced 2,710 clean-store events, 14 alerts, 0 gaps, 0 schema errors, replay 14/14, and a 2,972-file SATA capture. The installed `sentinel-reader` task stored 12 events before reboot and 308 at the continuation check (310 after the agent stopped), resumed the same sensor incarnation/bookmark, remained Running, and was torn down with the channel ACL, user rights, reader task, and resume task restored/removed. See [`docs/v02-reboot-resume.md`](../docs/v02-reboot-resume.md) for the V0.2 evidence and [`docs/v01-live-validation.md`](../docs/v01-live-validation.md) for the earlier V0.1 runs.
 
-The SATA result volume path works; earlier FAT/copy results are historical. The latest install/teardown test ISO has SHA-256 `9bd059702e885590c9d16df1361d8da53dff86ca006c8a074257ff5a5ce153e2`; the self-contained agent binary is `85e1fbc9ca5a2b15ce26e514df81cd0ed97332ed50014e2b6de35367d525dc77`, and the current profile hash is `da778a7639ab26df80924c24c79930e5df1fbde6d3716b462979995abd6a6949`. The harness now clears `data`/`capture` before a run, but the latest result predates that clear path; a clean-store rerun and a reboot-resume test remain open.
+The SATA result volume path works; earlier FAT/copy results are historical. The latest test ISO has SHA-256 `c97af4708a5622010076b2d3c981be2b88106808e1db46212712150a860b9817`; the self-contained agent is `c815d9dd22ebf3c408c69cdb7273954e32290a2371a524c2569be50304c1e5cc`, the status-aware control CLI is `4c4cf38e715fd198a151aa6ae1a1ca34195e5a8bee27209f72816d3cf9ec1ef7`, and the profile is `da778a7639ab26df80924c24c79930e5df1fbde6d3716b462979995abd6a6949`. Use `-NoReboot` for the older direct install/teardown path; the default run performs the clean-store + reboot-resume check.
 
 ## Build
 
-1. Publish the Windows binaries:
+1. Build the release bundle:
 
-```bash
-dotnet publish src/sentinel-agent -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish/win-x64
-dotnet publish src/sentinelctl -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish/win-x64-ctl
+```powershell
+./scripts/build-release.ps1 -Version 0.4.3
 ```
 
-2. Stage `vm/test-media/` with `autounattend.xml`, `run-sentinel.ps1`, `sysmon-sentinel-v01.xml`, `scripts/`, `rules/`, `schemas/ocsf-1.9.0/`, `agent/` (the full publish folder, including `e_sqlite3.dll`), and `ctl/`.
+The script writes `publish/release-0.4.3/deploy/{agent,ctl,rules,schemas}` with
+`SHA256SUMS.txt` and `release.json`. Each executable folder includes
+`e_sqlite3.dll`.
+
+2. Stage `vm/test-media/` with `autounattend.xml`, `run-sentinel.ps1`, `sysmon-sentinel-v01.xml`, `scripts/`, and the `rules/`, `schemas/ocsf-1.9.0/`, `agent/`, and `ctl/` folders from `deploy/`.
 
 3. Build the data-only ISO:
 
@@ -66,9 +69,10 @@ The container maps `G:\VM\Sentinel-QEMU` to `/vm` and `G:\ISO` to `/iso:ro`, exp
 4. runs the loopback connect/accept/refuse probes, a temp-directory executable, and an encoded PowerShell command;
 5. runs the live reader, `sentinelctl verify`, `timeline`, and `replay`;
 6. captures raw XML;
-7. installs the reader/task via `scripts/install-sentinel-agent.ps1`, checks the channel ACL, starts the task as the reader, verifies its database, attempts an outsider query, then uninstalls and restores ACLs/user rights;
-8. copies the database, capture, installed-task database, and logs to the `SENTINELOUT` SATA/FAT volume;
-9. writes a JSON result between `SENTINEL_RESULT_BEGIN`/`SENTINEL_RESULT_END` on COM1 and shuts down.
+7. installs the reader/task via `scripts/install-sentinel-agent.ps1`, checks the channel ACL, starts the task as the reader, verifies its database, attempts an outsider query, records its event count/bookmark, and registers a SYSTEM `SentinelResume` continuation;
+8. reboots; `SentinelAgent` starts as the reader and `SentinelResume` waits for event growth, verifies the database, copies it, and tears down the task/ACL/reader;
+9. copies the database, capture, installed-task database, logs, and pre-reboot state to the `SENTINELOUT` SATA/FAT volume;
+10. writes a JSON result between `SENTINEL_RESULT_BEGIN`/`SENTINEL_RESULT_END` on COM1 and shuts down.
 
 The raw FAT disk can be read on the host with `pyfatfs` without mounting it:
 
@@ -84,4 +88,4 @@ The available VMware Workstation 17 **Player** does not support vTPM devices or 
 
 ## Limits
 
-This is a disposable synthetic lab. It does not prove independent hardware, production retention, full Sysmon coverage, reboot-resume, or legal evidence. The installed task currently starts from a manual `Start-ScheduledTask`/`schtasks /Run`, stores the reader password, and needs the local batch-logon right; a service installation and reboot test remain open. Live Event ID 3 records without an independently observed outcome remain OCSF Unknown by the accepted strict decision.
+This is a disposable synthetic lab. It does not prove independent hardware, production retention, full Sysmon coverage, exact losslessness beyond the bookmark/event-count check, or legal evidence. The installed task stores the reader password and needs the local batch-logon right; the continuation runs as SYSTEM and remains registered in the disposable VM. A service installation and a longer crash/outage test remain open. Live Event ID 3 records without an independently observed outcome remain OCSF Unknown by the accepted strict decision.
