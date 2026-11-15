@@ -20,6 +20,7 @@ param(
     [string]$ReaderUser = 'sentinel-reader',
     [string]$Channel = 'Microsoft-Windows-Sysmon/Operational',
     [string]$TaskName = 'SentinelAgent',
+    [string]$RetentionTaskName = 'SentinelRetention',
     [switch]$RemoveReader,
     [switch]$RemoveData,
     [switch]$RemoveInstall
@@ -63,6 +64,12 @@ if ($task) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
+$retentionTask = Get-ScheduledTask -TaskName $RetentionTaskName -ErrorAction SilentlyContinue
+if ($retentionTask) {
+    Stop-ScheduledTask -TaskName $RetentionTaskName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $RetentionTaskName -Confirm:$false
+}
+
 $oldAcl = Get-SavedChannelAcl -Path $aclRecord
 if ($oldAcl) {
     & wevtutil.exe sl $Channel "/ca:$oldAcl"
@@ -104,6 +111,7 @@ if ($RemoveInstall -and (Test-Path -LiteralPath $install)) {
 
 [ordered]@{
     task_removed = -not [bool](Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)
+    retention_task_removed = -not [bool](Get-ScheduledTask -TaskName $RetentionTaskName -ErrorAction SilentlyContinue)
     channel_acl_restored = [bool]$oldAcl
     user_rights_restored = $rightsRestored
     reader_removed = if ($RemoveReader) { -not [bool](Get-LocalUser -Name $ReaderUser -ErrorAction SilentlyContinue) } else { $false }

@@ -4,7 +4,19 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>Sentinel.Windows</PackageId>
+    <Description>Windows Event Log source adapter for the Sentinel engine.</Description>
+    <Authors>jkalend</Authors>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/jkalend/Sentinel</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>security;telemetry;windows;eventlog;sysmon</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="System.Diagnostics.EventLog" Version="10.0.14" />

@@ -1,11 +1,20 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using Sentinel.Core.Cli;
 using Sentinel.Core.Rules;
 using Sentinel.Core.Sources;
 using Sentinel.Core.Store;
 using Sentinel.Core.Sysmon;
 using Sentinel.Windows;
+
+var commandOptions = new Dictionary<string, IReadOnlyDictionary<string, bool>>(StringComparer.OrdinalIgnoreCase)
+{
+    ["run"] = Spec(("db", true), ("rules", true), ("max-records", true), ("channel", true)),
+    ["capture"] = Spec(
+        ("output", true), ("max-records", true), ("sensor-id", true), ("host-id", true), ("channel", true)),
+    ["channel"] = Spec(("channel", true))
+};
 
 var exitCode = 0;
 
@@ -19,6 +28,11 @@ try
 
     var command = args[0].ToLowerInvariant();
     var options = ParseOptions(args.Skip(1).ToArray());
+    if (commandOptions.TryGetValue(command, out var allowedOptions))
+    {
+        CliOptions.Validate(command, options, allowedOptions);
+    }
+
     var channel = Get(options, "channel") ?? SysmonXmlReader.SysmonChannel;
 
     switch (command)
@@ -175,38 +189,12 @@ static int? ParseInt(string? value)
     return parsed;
 }
 
-static Dictionary<string, string?> ParseOptions(string[] args)
-{
-    var options = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-    for (var index = 0; index < args.Length; index++)
-    {
-        var arg = args[index];
-        if (!arg.StartsWith("--", StringComparison.Ordinal))
-        {
-            throw new ArgumentException($"Unexpected argument '{arg}'.");
-        }
+static Dictionary<string, string?> ParseOptions(string[] args) => CliOptions.Parse(args);
 
-        var key = arg[2..];
-        if (key.Length == 0)
-        {
-            throw new ArgumentException("Empty option name.");
-        }
+static Dictionary<string, bool> Spec(params (string Key, bool TakesValue)[] entries) =>
+    entries.ToDictionary(entry => entry.Key, entry => entry.TakesValue, StringComparer.OrdinalIgnoreCase);
 
-        if (index + 1 < args.Length && !args[index + 1].StartsWith("--", StringComparison.Ordinal))
-        {
-            options[key] = args[++index];
-        }
-        else
-        {
-            options[key] = null;
-        }
-    }
-
-    return options;
-}
-
-static string? Get(Dictionary<string, string?> options, string key) =>
-    options.TryGetValue(key, out var value) ? value : null;
+static string? Get(Dictionary<string, string?> options, string key) => CliOptions.Get(options, key);
 
 static void Usage()
 {

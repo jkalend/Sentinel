@@ -1,6 +1,7 @@
 ﻿using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Sentinel.Core.Cli;
 using Sentinel.Core.Fixture;
 using Sentinel.Core.Fleet;
 using Sentinel.Core.Model;
@@ -11,6 +12,35 @@ using Sentinel.Core.Store;
 using Sentinel.Core.Transport;
 using Sentinel.Core.Sysmon;
 using Sentinel.Core.Timeline;
+
+var commandOptions = new Dictionary<string, IReadOnlyDictionary<string, bool>>(StringComparer.OrdinalIgnoreCase)
+{
+    ["init"] = Spec(("db", true), ("sensor-id", true), ("host-id", true)),
+    ["enroll"] = Spec(
+        ("db", true), ("sensor-id", true), ("host-id", true), ("host-name", true),
+        ("config-generation", true), ("clock-offset-ms", true), ("clock-uncertainty-ms", true)),
+    ["fleet"] = Spec(("dbs", true), ("db", true), ("format", true)),
+    ["collector"] = Spec(("listen", true), ("root", true), ("rules", true), ("token", true), ("allow-sensors", true)),
+    ["push"] = Spec(
+        ("db", true), ("collector", true), ("token", true), ("batch-size", true), ("retries", true),
+        ("reset-ack", false)),
+    ["ingest"] = Spec(("fixture", true), ("db", true), ("rules", true), ("sensor-id", true), ("host-id", true)),
+    ["timeline"] = Spec(("db", true)),
+    ["replay"] = Spec(("db", true), ("rules", true)),
+    ["gaps"] = Spec(("db", true)),
+    ["status"] = Spec(("db", true)),
+    ["purge"] = Spec(
+        ("db", true), ("event-days", true), ("raw-days", true), ("alert-days", true), ("health-days", true),
+        ("gap-days", true), ("keep-events", true), ("max-bytes", true), ("now", true), ("apply", false)),
+    ["purges"] = Spec(("db", true), ("limit", true)),
+    ["run"] = Spec(
+        ("db", true), ("output", true), ("rules", true), ("schema", true), ("source-keys", true),
+        ("include-payload", false)),
+    ["verify-run"] = Spec(("manifest", true), ("db", true)),
+    ["backup"] = Spec(("db", true), ("output", true)),
+    ["restore"] = Spec(("backup", true), ("db", true)),
+    ["verify"] = Spec(("db", true), ("schema", true))
+};
 
 var exitCode = 0;
 
@@ -24,6 +54,10 @@ try
 
     var command = args[0].ToLowerInvariant();
     var options = ParseOptions(args.Skip(1).ToArray());
+    if (commandOptions.TryGetValue(command, out var allowedOptions))
+    {
+        CliOptions.Validate(command, options, allowedOptions);
+    }
 
     switch (command)
     {
@@ -565,64 +599,18 @@ static string ResolveSchemaRoot(string? explicitPath)
     throw new DirectoryNotFoundException("OCSF schema directory not found; pass --schema.");
 }
 
-static Dictionary<string, string?> ParseOptions(string[] args)
-{
-    var options = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-    for (var index = 0; index < args.Length; index++)
-    {
-        var arg = args[index];
-        if (!arg.StartsWith("--", StringComparison.Ordinal))
-        {
-            throw new ArgumentException($"Unexpected argument '{arg}'.");
-        }
+static Dictionary<string, string?> ParseOptions(string[] args) => CliOptions.Parse(args);
 
-        var key = arg[2..];
-        if (key.Length == 0)
-        {
-            throw new ArgumentException("Empty option name.");
-        }
+static Dictionary<string, bool> Spec(params (string Key, bool TakesValue)[] entries) =>
+    entries.ToDictionary(entry => entry.Key, entry => entry.TakesValue, StringComparer.OrdinalIgnoreCase);
 
-        if (index + 1 < args.Length && !args[index + 1].StartsWith("--", StringComparison.Ordinal))
-        {
-            options[key] = args[++index];
-        }
-        else
-        {
-            options[key] = null;
-        }
-    }
+static string? Get(Dictionary<string, string?> options, string key) => CliOptions.Get(options, key);
 
-    return options;
-}
+static int Integer(Dictionary<string, string?> options, string key, int defaultValue) =>
+    CliOptions.Integer(options, key, defaultValue);
 
-static string? Get(Dictionary<string, string?> options, string key) =>
-    options.TryGetValue(key, out var value) ? value : null;
-
-static int Integer(Dictionary<string, string?> options, string key, int defaultValue)
-{
-    var text = Get(options, key);
-    if (text is null)
-    {
-        return defaultValue;
-    }
-
-    return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
-        ? value
-        : throw new ArgumentException($"--{key} must be an integer.");
-}
-
-static long Long(Dictionary<string, string?> options, string key, long defaultValue)
-{
-    var text = Get(options, key);
-    if (text is null)
-    {
-        return defaultValue;
-    }
-
-    return long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
-        ? value
-        : throw new ArgumentException($"--{key} must be an integer.");
-}
+static long Long(Dictionary<string, string?> options, string key, long defaultValue) =>
+    CliOptions.Long(options, key, defaultValue);
 
 static void Usage()
 {

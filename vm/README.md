@@ -17,14 +17,17 @@ The SATA result volume path works; earlier FAT/copy results are historical. The 
 
 ## Build
 
-1. Publish the Windows binaries:
+1. Build the release bundle:
 
-```bash
-dotnet publish src/sentinel-agent -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish/win-x64
-dotnet publish src/sentinelctl -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish/win-x64-ctl
+```powershell
+./scripts/build-release.ps1 -Version 0.4.3
 ```
 
-2. Stage `vm/test-media/` with `autounattend.xml`, `run-sentinel.ps1`, `sysmon-sentinel-v01.xml`, `scripts/`, `rules/`, `schemas/ocsf-1.9.0/`, `agent/` (the full publish folder, including `e_sqlite3.dll`), and `ctl/`.
+The script writes `publish/release-0.4.3/deploy/{agent,ctl,rules,schemas}` with
+`SHA256SUMS.txt` and `release.json`. Each executable folder includes
+`e_sqlite3.dll`.
+
+2. Stage `vm/test-media/` with `autounattend.xml`, `run-sentinel.ps1`, `sysmon-sentinel-v01.xml`, `scripts/`, and the `rules/`, `schemas/ocsf-1.9.0/`, `agent/`, and `ctl/` folders from `deploy/`.
 
 3. Build the data-only ISO:
 

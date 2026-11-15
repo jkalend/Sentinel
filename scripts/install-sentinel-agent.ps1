@@ -9,6 +9,11 @@ the Sysmon Operational channel to Administrators/SYSTEM/reader, grants the
 reader write access only to data/capture, and registers a startup scheduled
 task that runs the agent as the reader.
 
+Unless -NoRetentionTask is used, it also registers a daily SentinelRetention
+task that runs `sentinelctl purge --apply` as SYSTEM with 30-day normalized
+events, 7-day raw XML, and 90-day alerts/source-health/gaps. Use the day
+parameters to change the policy; -NoTask skips both scheduled tasks.
+
 The installer does not install Sysmon itself. Install and configure Sysmon
 first; see docs/v01-windows-vm-runbook.md.
 
@@ -30,8 +35,15 @@ param(
     [SecureString]$ReaderPassword,
     [string]$Channel = 'Microsoft-Windows-Sysmon/Operational',
     [string]$TaskName = 'SentinelAgent',
+    [string]$RetentionTaskName = 'SentinelRetention',
+    [int]$EventDays = 30,
+    [int]$RawDays = 7,
+    [int]$AlertDays = 90,
+    [int]$HealthDays = 90,
+    [int]$GapDays = 90,
     [switch]$Start,
-    [switch]$NoTask
+    [switch]$NoTask,
+    [switch]$NoRetentionTask
 )
 
 $ErrorActionPreference = 'Stop'
@@ -180,9 +192,10 @@ try {
         throw "wevtutil sl $Channel failed with $LASTEXITCODE"
     }
 
+    $dbPath = Join-Path $data 'sentinel.db'
+
     if (-not $NoTask) {
         $agentExe = Join-Path $install 'agent\sentinel-agent.exe'
-        $dbPath = Join-Path $data 'sentinel.db'
         $rulesPath = Join-Path $install 'rules'
         $agentLog = Join-Path $data 'agent.log'
         $commandLine = '/c ""' + $agentExe + '" run --db "' + $dbPath + '" --rules "' + $rulesPath + '" > "' + $agentLog + '" 2>&1"'
@@ -222,6 +235,33 @@ try {
             }
         }
     }
+
+    if (-not $NoTask -and -not $NoRetentionTask) {
+        $ctlExe = Join-Path $install 'ctl\sentinelctl.exe'
+        $retentionLog = Join-Path $data 'retention.log'
+        $purgeArguments = '/c ""' + $ctlExe + '" purge --db "' + $dbPath + '"' +
+            ' --event-days ' + $EventDays +
+            ' --raw-days ' + $RawDays +
+            ' --alert-days ' + $AlertDays +
+            ' --health-days ' + $HealthDays +
+            ' --gap-days ' + $GapDays +
+            ' --keep-events 1000 --max-bytes 10737418240 --apply' +
+            ' > "' + $retentionLog + '" 2>&1"'
+        $retentionAction = New-ScheduledTaskAction `
+            -Execute (Join-Path $env:SystemRoot 'System32\cmd.exe') `
+            -Argument $purgeArguments `
+            -WorkingDirectory $install
+        $retentionTrigger = New-ScheduledTaskTrigger -Daily -At '03:15'
+        $retentionSettings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
+            -MultipleInstances IgnoreNew -StartWhenAvailable
+        $retentionPrincipal = New-ScheduledTaskPrincipal `
+            -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        Register-ScheduledTask -TaskName $RetentionTaskName `
+            -Action $retentionAction -Trigger $retentionTrigger `
+            -Settings $retentionSettings -Principal $retentionPrincipal -Force | Out-Null
+    }
 }
 catch {
     & wevtutil.exe sl $Channel "/ca:$oldAcl" | Out-Null
@@ -241,7 +281,15 @@ $taskInfo = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyConti
     channel_acl_after = Get-ChannelAcl -Name $Channel
     task = $state
     task_info = $taskInfo
+    retention_task = if ($NoTask -or $NoRetentionTask) {
+        $null
+    }
+    else {
+        Get-ScheduledTask -TaskName $RetentionTaskName -ErrorAction SilentlyContinue |
+            Select-Object TaskName, State
+    }
     agent_log = Join-Path $data 'agent.log'
+    retention_log = Join-Path $data 'retention.log'
     data = $data
     capture = $capture
     acl_record = $aclRecord

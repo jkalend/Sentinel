@@ -4,7 +4,19 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>Sentinel.Core</PackageId>
+    <Description>Local-first security telemetry engine: Sysmon XML parsing, OCSF mapping, rule evaluation, SQLite store, replay, timeline, and run manifests.</Description>
+    <Authors>jkalend</Authors>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/jkalend/Sentinel</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>security;telemetry;ocsf;sysmon;detection</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
