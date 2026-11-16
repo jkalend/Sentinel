@@ -83,7 +83,8 @@ Enforcement in this slice:
 
 - `purge` uses the active retention policy when no retention flag is supplied.
 - `push` rejects a collector outside `allowed_collectors`.
-- `run`, `replay`, and the live agent use the pinned rule pack.
+- `run`, `replay`, and the live agent use the pinned rule pack; a config without
+  a pack pin falls back to the active pack, then the rules directory.
 - `sentinel-agent` uses the active config generation for a new bookmark.
 
 Config documents are local and unsigned. No remote apply, signature check, or

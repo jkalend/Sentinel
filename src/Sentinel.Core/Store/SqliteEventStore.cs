@@ -626,6 +626,11 @@ public sealed class SqliteEventStore : IDisposable
 
         if (previous is not null)
         {
+            EnsureIncarnation(
+                enrollment.SensorId,
+                enrollment.HostId,
+                previous,
+                bookmark?.UpdatedAt ?? now);
             using var end = _connection.CreateCommand();
             end.CommandText = """
                 UPDATE sensor_incarnations
