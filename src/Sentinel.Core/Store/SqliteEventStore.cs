@@ -1167,7 +1167,7 @@ public sealed class SqliteEventStore : IDisposable
         policy.Validate();
         var at = (now ?? DateTimeOffset.UtcNow).ToUniversalTime();
         var eventCutoff = at.AddDays(-policy.EventDays);
-        var rawCutoff = at.AddDays(-policy.RawDays);
+        var rawCutoff = policy.RawDays < 0 ? DateTimeOffset.MinValue : at.AddDays(-policy.RawDays);
         var alertCutoff = at.AddDays(-policy.AlertDays);
         var healthCutoff = at.AddDays(-policy.SourceHealthDays);
         var gapCutoff = at.AddDays(-policy.GapDays);

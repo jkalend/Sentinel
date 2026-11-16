@@ -4,6 +4,28 @@ All notable changes to Sentinel. Versions are `0.x.y`; each release covers the
 whole repository (agent, control CLI, rules, and schemas). Release artifacts and
 their verification limits are described in [docs/release.md](docs/release.md).
 
+## [0.7.0] - 2026-11-16
+
+Detection and retention breadth (bounded).
+
+### Added
+
+- `sigma-import --input <dir> --output <dir>` converts a single-selection Sigma
+  subset (Image, CommandLine, Destination/Source IP/port, Protocol) into native
+  Sentinel rules. Unsupported fields, modifiers, lists, and correlation forms
+  are rejected, not approximated.
+- `RetentionPolicy.ExtendedRetention` with `RawDays=-1` and
+  `purge --extended-retention` keeps raw XML indefinitely by explicit opt-in.
+  No encryption at rest is provided.
+
+### Limits
+
+- Sigma import is a tested subset, not full Sigma compatibility; author/license
+  metadata is copied but per-rule license enforcement is not implemented.
+- Extended retention is unencrypted and local; it is not a WORM or custody
+  feature.
+- Additional export integrations were not added in this slice.
+
 ## [0.6.0] - 2026-11-16
 
 Event coverage and evidence hardening.
