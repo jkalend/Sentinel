@@ -47,8 +47,10 @@ if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$') {
     throw "Version '$Version' is not a supported release version."
 }
 
+$defaultOutput = [IO.Path]::GetFullPath((Join-Path $repo "publish\release-$Version")).TrimEnd(
+    [IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 if (-not $OutputDir) {
-    $OutputDir = Join-Path $repo "publish\release-$Version"
+    $OutputDir = $defaultOutput
 }
 
 $outputFull = [IO.Path]::GetFullPath($OutputDir)
@@ -56,6 +58,7 @@ $output = $outputFull.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltD
 if ([string]::IsNullOrWhiteSpace($output)) {
     throw 'OutputDir resolves to an empty path.'
 }
+$buildMarker = Join-Path $output '.sentinel-release-build'
 $root = [IO.Path]::GetPathRoot($outputFull).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 if ([string]::Equals($output, $root, [StringComparison]::OrdinalIgnoreCase)) {
     throw "refusing to use a filesystem root as -OutputDir: $output"
@@ -68,22 +71,41 @@ if ([string]::Equals($output, $repoFull, [StringComparison]::OrdinalIgnoreCase) 
 if (Test-Path -LiteralPath $output -PathType Leaf) {
     throw "-OutputDir '$output' points at a file."
 }
+
+$expectedSdk = (Get-Content -LiteralPath (Join-Path $repo 'global.json') | ConvertFrom-Json).sdk.version
+$sdkExit = 1
+Push-Location -LiteralPath $repo
+try {
+    $actualSdk = (& dotnet --version).Trim()
+    $sdkExit = $LASTEXITCODE
+}
+finally {
+    Pop-Location
+}
+if ($sdkExit -ne 0 -or $actualSdk -ne $expectedSdk) {
+    throw "dotnet resolves SDK '$actualSdk' but global.json requires '$expectedSdk'."
+}
+
+if ($WhatIfPreference) {
+    Write-Output "would build $Version into $output"
+    return
+}
+
 if (Test-Path -LiteralPath $output) {
     $hasChildren = [bool](Get-ChildItem -LiteralPath $output -Force -ErrorAction Stop | Select-Object -First 1)
     $isReleaseDir = Test-Path -LiteralPath (Join-Path $output 'release.json')
-    if ($hasChildren -and -not $isReleaseDir) {
-        throw "refusing to delete '$output': it is not empty and has no release.json marker. Use a new or empty directory, or remove it manually."
+    $isBuildDir = Test-Path -LiteralPath $buildMarker
+    $isDefault = [string]::Equals($output, $defaultOutput, [StringComparison]::OrdinalIgnoreCase)
+    if ($hasChildren -and -not ($isReleaseDir -or $isBuildDir -or $isDefault)) {
+        throw "refusing to delete '$output': it is not empty and has no release marker. Use a new or empty directory, or remove it manually."
     }
     if ($PSCmdlet.ShouldProcess($output, 'Remove existing release directory')) {
         Remove-Item -LiteralPath $output -Recurse -Force
     }
 }
 
-$expectedSdk = (Get-Content -LiteralPath (Join-Path $repo 'global.json') | ConvertFrom-Json).sdk.version
-$actualSdk = (& dotnet --version).Trim()
-if ($LASTEXITCODE -ne 0 -or $actualSdk -ne $expectedSdk) {
-    throw "dotnet resolves SDK '$actualSdk' but global.json requires '$expectedSdk'."
-}
+New-Item -ItemType Directory -Path $output -Force | Out-Null
+Set-Content -LiteralPath $buildMarker -Value $Version -Encoding ASCII
 
 $deploy = Join-Path $output 'deploy'
 New-Item -ItemType Directory -Path $deploy -Force | Out-Null
@@ -108,10 +130,18 @@ function Get-Sha256 {
 function Publish-Project {
     param([string]$Project, [string]$Destination)
     $source = Join-Path $repo $Project
-    & dotnet publish $source -c Release -r $Runtime --self-contained true `
-        -p:PublishSingleFile=true -p:Version=$Version -o $Destination --nologo
-    if ($LASTEXITCODE -ne 0) {
-        throw "dotnet publish failed for $Project (exit $LASTEXITCODE)"
+    $exit = 1
+    Push-Location -LiteralPath $repo
+    try {
+        & dotnet publish $source -c Release -r $Runtime --self-contained true `
+            -p:PublishSingleFile=true -p:Version=$Version -o $Destination --nologo
+        $exit = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+    }
+    if ($exit -ne 0) {
+        throw "dotnet publish failed for $Project (exit $exit)"
     }
 }
 
@@ -125,9 +155,17 @@ Copy-Item -LiteralPath (Join-Path $repo 'schemas') -Destination (Join-Path $depl
 $packages = Join-Path $output 'packages'
 New-Item -ItemType Directory -Path $packages -Force | Out-Null
 foreach ($project in @('src\Sentinel.Core\Sentinel.Core.csproj', 'src\Sentinel.Windows\Sentinel.Windows.csproj')) {
-    & dotnet pack (Join-Path $repo $project) -c Release -p:Version=$Version -o $packages --nologo
-    if ($LASTEXITCODE -ne 0) {
-        throw "dotnet pack failed for $project (exit $LASTEXITCODE)"
+    $exit = 1
+    Push-Location -LiteralPath $repo
+    try {
+        & dotnet pack (Join-Path $repo $project) -c Release -p:Version=$Version -o $packages --nologo
+        $exit = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+    }
+    if ($exit -ne 0) {
+        throw "dotnet pack failed for $project (exit $exit)"
     }
 }
 
@@ -188,6 +226,7 @@ $releaseJson = [ordered]@{
     (Join-Path $output 'release.json'),
     $releaseJson,
     (New-Object System.Text.UTF8Encoding($false)))
+Remove-Item -LiteralPath $buildMarker -Force -ErrorAction SilentlyContinue
 
 Write-Output "release: $output"
 Write-Output "version: $Version"
