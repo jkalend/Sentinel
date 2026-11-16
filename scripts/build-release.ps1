@@ -95,8 +95,7 @@ if (Test-Path -LiteralPath $output) {
     $hasChildren = [bool](Get-ChildItem -LiteralPath $output -Force -ErrorAction Stop | Select-Object -First 1)
     $isReleaseDir = Test-Path -LiteralPath (Join-Path $output 'release.json')
     $isBuildDir = Test-Path -LiteralPath $buildMarker
-    $isDefault = [string]::Equals($output, $defaultOutput, [StringComparison]::OrdinalIgnoreCase)
-    if ($hasChildren -and -not ($isReleaseDir -or $isBuildDir -or $isDefault)) {
+    if ($hasChildren -and -not ($isReleaseDir -or $isBuildDir)) {
         throw "refusing to delete '$output': it is not empty and has no release marker. Use a new or empty directory, or remove it manually."
     }
     if ($PSCmdlet.ShouldProcess($output, 'Remove existing release directory')) {
