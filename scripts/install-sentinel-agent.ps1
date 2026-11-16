@@ -37,6 +37,8 @@ param(
     [string]$Channel = 'Microsoft-Windows-Sysmon/Operational',
     [string]$TaskName = 'SentinelAgent',
     [string]$RetentionTaskName = 'SentinelRetention',
+    [string]$SensorId = '',
+    [string]$HostId = '',
     [int]$EventDays = 30,
     [int]$RawDays = 7,
     [int]$AlertDays = 90,
@@ -161,6 +163,28 @@ $capture = Join-Path $install 'capture'
 New-Item -ItemType Directory -Path $data -Force | Out-Null
 New-Item -ItemType Directory -Path $capture -Force | Out-Null
 
+$identityPath = Join-Path $install 'identity.json'
+$existingIdentity = $null
+if (Test-Path -LiteralPath $identityPath) {
+    $existingIdentity = Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
+}
+if (-not $SensorId -and $existingIdentity -and $existingIdentity.PSObject.Properties['sensor_id']) {
+    $SensorId = [string]$existingIdentity.sensor_id
+}
+if (-not $HostId -and $existingIdentity -and $existingIdentity.PSObject.Properties['host_id']) {
+    $HostId = [string]$existingIdentity.host_id
+}
+if (-not $SensorId) {
+    $SensorId = [guid]::NewGuid().ToString('D')
+}
+if (-not $HostId) {
+    $HostId = [guid]::NewGuid().ToString('D')
+}
+[ordered]@{
+    sensor_id = $SensorId
+    host_id = $HostId
+} | ConvertTo-Json | Set-Content -LiteralPath $identityPath -Encoding UTF8
+
 $user = Get-LocalUser -Name $ReaderUser -ErrorAction SilentlyContinue
 if ($user) {
     Set-LocalUser -Name $ReaderUser -Password $ReaderPassword
@@ -199,7 +223,9 @@ try {
         $agentExe = Join-Path $install 'agent\sentinel-agent.exe'
         $rulesPath = Join-Path $install 'rules'
         $agentLog = Join-Path $data 'agent.log'
-        $commandLine = '/c ""' + $agentExe + '" run --db "' + $dbPath + '" --rules "' + $rulesPath + '" > "' + $agentLog + '" 2>&1"'
+        $commandLine = '/c ""' + $agentExe + '" run --db "' + $dbPath + '" --rules "' + $rulesPath + '"'
+        $commandLine += ' --sensor-id "' + $SensorId + '" --host-id "' + $HostId + '"'
+        $commandLine += ' > "' + $agentLog + '" 2>&1"'
         $action = New-ScheduledTaskAction `
             -Execute (Join-Path $env:SystemRoot 'System32\cmd.exe') `
             -Argument $commandLine `
@@ -290,6 +316,9 @@ $taskInfo = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyConti
     installed = $install
     reader = $ReaderUser
     reader_sid = $readerSid
+    sensor_id = $SensorId
+    host_id = $HostId
+    identity_path = $identityPath
     channel = $Channel
     channel_acl_before = $oldAcl
     channel_acl_after = Get-ChannelAcl -Name $Channel

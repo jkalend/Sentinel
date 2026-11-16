@@ -1,7 +1,9 @@
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using Sentinel.Core.Config;
 using Sentinel.Core.Model;
+using Sentinel.Core.Rules;
 
 namespace Sentinel.Core.Store;
 
@@ -52,6 +54,16 @@ public sealed class SqliteEventStore : IDisposable
                 config_generation INTEGER NOT NULL,
                 clock_offset_ms INTEGER NOT NULL,
                 clock_uncertainty_ms INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS sensor_incarnations (
+                incarnation_id TEXT PRIMARY KEY,
+                sensor_id TEXT NOT NULL,
+                host_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                ended_at TEXT NULL,
+                revoked_at TEXT NULL,
+                reason TEXT NULL
             );
 
             CREATE TABLE IF NOT EXISTS bookmarks (
@@ -133,10 +145,35 @@ public sealed class SqliteEventStore : IDisposable
                 source_key TEXT NOT NULL,
                 sensor_sequence INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
-                details_json TEXT NOT NULL
+                details_json TEXT NOT NULL,
+                pack_id TEXT NULL,
+                pack_sha256 TEXT NULL
             );
 
             CREATE INDEX IF NOT EXISTS ix_alerts_source ON alerts(source_key);
+
+            CREATE TABLE IF NOT EXISTS rule_packs (
+                pack_sha256 TEXT PRIMARY KEY,
+                pack_id TEXT NOT NULL,
+                version TEXT NOT NULL,
+                manifest_json TEXT NOT NULL,
+                rules_json TEXT NOT NULL,
+                installed_at TEXT NOT NULL,
+                source TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS rule_pack_activations (
+                generation INTEGER PRIMARY KEY AUTOINCREMENT,
+                pack_sha256 TEXT NOT NULL,
+                activated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS config_generations (
+                generation INTEGER PRIMARY KEY AUTOINCREMENT,
+                config_sha256 TEXT NOT NULL,
+                document_json TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS gaps (
                 gap_id TEXT PRIMARY KEY,
@@ -189,6 +226,8 @@ public sealed class SqliteEventStore : IDisposable
         EnsureColumn("bookmarks", "bookmark_xml", "TEXT NULL");
         EnsureColumn("events", "network_outcome", "TEXT NULL");
         EnsureColumn("events", "raw_purged_at", "TEXT NULL");
+        EnsureColumn("alerts", "pack_id", "TEXT NULL");
+        EnsureColumn("alerts", "pack_sha256", "TEXT NULL");
         SetMetaIfMissing("contract_version", SentinelVersions.ContractVersion);
         SetMetaIfMissing("ocsf_version", SentinelVersions.OcsfVersion);
         SetMetaIfMissing("engine_version", SentinelVersions.EngineVersion);
@@ -326,6 +365,449 @@ public sealed class SqliteEventStore : IDisposable
         return (resolvedSensor, resolvedHost);
     }
 
+    public void InstallRulePack(RulePack pack, string source = "local")
+    {
+        RuleLoader.LoadPack(pack);
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO rule_packs
+                (pack_sha256, pack_id, version, manifest_json, rules_json, installed_at, source)
+            VALUES
+                ($pack_sha256, $pack_id, $version, $manifest_json, $rules_json, $installed_at, $source)
+            ON CONFLICT(pack_sha256) DO NOTHING;
+            """;
+        command.Parameters.AddWithValue("$pack_sha256", pack.PackSha256);
+        command.Parameters.AddWithValue("$pack_id", pack.Manifest.PackId);
+        command.Parameters.AddWithValue("$version", pack.Manifest.Version);
+        command.Parameters.AddWithValue("$manifest_json", JsonSerializer.Serialize(pack.Manifest));
+        command.Parameters.AddWithValue("$rules_json", JsonSerializer.Serialize(pack.YamlFiles));
+        command.Parameters.AddWithValue("$installed_at", Timestamp(DateTimeOffset.UtcNow));
+        command.Parameters.AddWithValue("$source", source);
+        command.ExecuteNonQuery();
+    }
+
+    public RulePack? GetRulePack(string packSha256)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT manifest_json, rules_json
+            FROM rule_packs WHERE pack_sha256 = $pack_sha256;
+            """;
+        command.Parameters.AddWithValue("$pack_sha256", packSha256);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return ReadRulePack(packSha256, reader.GetString(0), reader.GetString(1));
+    }
+
+    public RulePack? GetRulePackByIdVersion(string packId, string version)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT pack_sha256, manifest_json, rules_json
+            FROM rule_packs
+            WHERE pack_id = $pack_id AND version = $version
+            ORDER BY installed_at DESC LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$pack_id", packId);
+        command.Parameters.AddWithValue("$version", version);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return ReadRulePack(reader.GetString(0), reader.GetString(1), reader.GetString(2));
+    }
+
+    public RulePack? ResolveRulePack(string reference)
+    {
+        if (string.IsNullOrWhiteSpace(reference))
+        {
+            throw new ArgumentException("Rule pack reference is required.", nameof(reference));
+        }
+
+        var direct = GetRulePack(reference);
+        if (direct is not null)
+        {
+            return direct;
+        }
+
+        var parts = reference.Split('@', 2);
+        if (parts.Length == 2)
+        {
+            return GetRulePackByIdVersion(parts[0], parts[1]);
+        }
+
+        var matches = ListRulePacks()
+            .Where(pack => string.Equals(pack.PackId, reference, StringComparison.Ordinal))
+            .ToList();
+        return matches.Count == 1 ? GetRulePack(matches[0].PackSha256) : null;
+    }
+
+    public IReadOnlyList<RulePackSummary> ListRulePacks()
+    {
+        var active = GetActiveRulePackActivation();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT pack_sha256, pack_id, version, installed_at, source
+            FROM rule_packs ORDER BY installed_at DESC, pack_id;
+            """;
+        using var reader = command.ExecuteReader();
+        var packs = new List<RulePackSummary>();
+        while (reader.Read())
+        {
+            var sha = reader.GetString(0);
+            packs.Add(new RulePackSummary(
+                sha,
+                reader.GetString(1),
+                reader.GetString(2),
+                DateTimeOffset.Parse(reader.GetString(3), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                reader.GetString(4),
+                active is not null && string.Equals(active.Value.PackSha256, sha, StringComparison.OrdinalIgnoreCase),
+                active is not null && string.Equals(active.Value.PackSha256, sha, StringComparison.OrdinalIgnoreCase)
+                    ? active.Value.Generation
+                    : null));
+        }
+
+        return packs;
+    }
+
+    public int ActivateRulePack(string packSha256)
+    {
+        if (GetRulePack(packSha256) is null)
+        {
+            throw new InvalidOperationException($"rule pack '{packSha256}' is not installed.");
+        }
+
+        using (var command = _connection.CreateCommand())
+        {
+            command.CommandText = """
+                INSERT INTO rule_pack_activations (pack_sha256, activated_at)
+                VALUES ($pack_sha256, $activated_at);
+                """;
+            command.Parameters.AddWithValue("$pack_sha256", packSha256);
+            command.Parameters.AddWithValue("$activated_at", Timestamp(DateTimeOffset.UtcNow));
+            command.ExecuteNonQuery();
+        }
+
+        using var rowId = _connection.CreateCommand();
+        rowId.CommandText = "SELECT last_insert_rowid();";
+        return Convert.ToInt32(rowId.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    public RulePack? GetActiveRulePack()
+    {
+        var active = GetActiveRulePackActivation();
+        return active is null ? null : GetRulePack(active.Value.PackSha256);
+    }
+
+    public RulePack? RollbackRulePack()
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT pack_sha256
+            FROM rule_pack_activations
+            GROUP BY pack_sha256
+            ORDER BY MAX(generation) DESC
+            LIMIT 2;
+            """;
+        using var reader = command.ExecuteReader();
+        var hashes = new List<string>();
+        while (reader.Read())
+        {
+            hashes.Add(reader.GetString(0));
+        }
+
+        if (hashes.Count < 2)
+        {
+            throw new InvalidOperationException("no previous rule pack activation to roll back to.");
+        }
+
+        ActivateRulePack(hashes[1]);
+        return GetRulePack(hashes[1]);
+    }
+
+    public IReadOnlyList<RulePackActivation> ReadRulePackActivations(int limit = 50)
+    {
+        var active = GetActiveRulePackActivation();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT generation, pack_sha256, activated_at
+            FROM rule_pack_activations
+            ORDER BY generation DESC LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = command.ExecuteReader();
+        var items = new List<RulePackActivation>();
+        while (reader.Read())
+        {
+            var generation = reader.GetInt32(0);
+            items.Add(new RulePackActivation(
+                generation,
+                reader.GetString(1),
+                DateTimeOffset.Parse(reader.GetString(2), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                active is not null && active.Value.Generation == generation));
+        }
+
+        return items;
+    }
+
+    private (int Generation, string PackSha256)? GetActiveRulePackActivation()
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT generation, pack_sha256
+            FROM rule_pack_activations
+            ORDER BY generation DESC LIMIT 1;
+            """;
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? (reader.GetInt32(0), reader.GetString(1)) : null;
+    }
+
+    public void EnsureIncarnation(
+        string sensorId,
+        string hostId,
+        string incarnationId,
+        DateTimeOffset? createdAt = null,
+        SqliteTransaction? transaction = null)
+    {
+        using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO sensor_incarnations
+                (incarnation_id, sensor_id, host_id, created_at)
+            VALUES
+                ($incarnation_id, $sensor_id, $host_id, $created_at)
+            ON CONFLICT(incarnation_id) DO NOTHING;
+            """;
+        command.Parameters.AddWithValue("$incarnation_id", incarnationId);
+        command.Parameters.AddWithValue("$sensor_id", sensorId);
+        command.Parameters.AddWithValue("$host_id", hostId);
+        command.Parameters.AddWithValue("$created_at", Timestamp(createdAt ?? DateTimeOffset.UtcNow));
+        command.ExecuteNonQuery();
+    }
+
+    public SensorIncarnation? GetActiveIncarnation()
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT incarnation_id, sensor_id, host_id, created_at, ended_at, revoked_at, reason
+            FROM sensor_incarnations
+            WHERE ended_at IS NULL AND revoked_at IS NULL
+            ORDER BY created_at DESC LIMIT 1;
+            """;
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ReadIncarnation(reader) : null;
+    }
+
+    public SensorIncarnation? GetLatestIncarnation()
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT incarnation_id, sensor_id, host_id, created_at, ended_at, revoked_at, reason
+            FROM sensor_incarnations
+            ORDER BY created_at DESC LIMIT 1;
+            """;
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ReadIncarnation(reader) : null;
+    }
+
+    public SensorIncarnation RotateIncarnation(string sourceId, string? reason = null)
+    {
+        var enrollment = GetEnrollment()
+            ?? throw new InvalidOperationException("store has no enrollment to rotate.");
+        var now = DateTimeOffset.UtcNow;
+        var bookmark = GetBookmark(sourceId);
+        var previous = bookmark?.IncarnationId ?? GetLatestIncarnation()?.IncarnationId;
+
+        if (previous is not null)
+        {
+            EnsureIncarnation(
+                enrollment.SensorId,
+                enrollment.HostId,
+                previous,
+                bookmark?.UpdatedAt ?? now);
+            using var end = _connection.CreateCommand();
+            end.CommandText = """
+                UPDATE sensor_incarnations
+                SET ended_at = $ended_at, reason = COALESCE($reason, reason)
+                WHERE incarnation_id = $incarnation_id AND ended_at IS NULL;
+                """;
+            end.Parameters.AddWithValue("$ended_at", Timestamp(now));
+            end.Parameters.AddWithValue("$reason", (object?)reason ?? DBNull.Value);
+            end.Parameters.AddWithValue("$incarnation_id", previous);
+            end.ExecuteNonQuery();
+        }
+
+        var incarnation = Guid.NewGuid().ToString("D");
+        EnsureIncarnation(enrollment.SensorId, enrollment.HostId, incarnation, now);
+        if (bookmark is not null)
+        {
+            using var update = _connection.CreateCommand();
+            update.CommandText = """
+                UPDATE bookmarks
+                SET incarnation_id = $incarnation_id, updated_at = $updated_at
+                WHERE source_id = $source_id;
+                """;
+            update.Parameters.AddWithValue("$incarnation_id", incarnation);
+            update.Parameters.AddWithValue("$updated_at", Timestamp(now));
+            update.Parameters.AddWithValue("$source_id", sourceId);
+            update.ExecuteNonQuery();
+        }
+
+        return GetLatestIncarnation()!;
+    }
+
+    public bool RevokeIncarnation(string incarnationId, string? reason = null)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            UPDATE sensor_incarnations
+            SET revoked_at = $revoked_at, reason = COALESCE($reason, reason)
+            WHERE incarnation_id = $incarnation_id AND revoked_at IS NULL;
+            """;
+        command.Parameters.AddWithValue("$revoked_at", Timestamp(DateTimeOffset.UtcNow));
+        command.Parameters.AddWithValue("$reason", (object?)reason ?? DBNull.Value);
+        command.Parameters.AddWithValue("$incarnation_id", incarnationId);
+        return command.ExecuteNonQuery() > 0;
+    }
+
+    public bool IsIncarnationRevoked(string incarnationId)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT revoked_at FROM sensor_incarnations WHERE incarnation_id = $incarnation_id;";
+        command.Parameters.AddWithValue("$incarnation_id", incarnationId);
+        return command.ExecuteScalar() is string;
+    }
+
+    public IReadOnlyList<SensorIncarnation> ReadIncarnations(int limit = 50)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT incarnation_id, sensor_id, host_id, created_at, ended_at, revoked_at, reason
+            FROM sensor_incarnations ORDER BY created_at DESC LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = command.ExecuteReader();
+        var items = new List<SensorIncarnation>();
+        while (reader.Read())
+        {
+            items.Add(ReadIncarnation(reader));
+        }
+
+        return items;
+    }
+
+    private static SensorIncarnation ReadIncarnation(Microsoft.Data.Sqlite.SqliteDataReader reader) =>
+        new(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            DateTimeOffset.Parse(reader.GetString(3), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            reader.IsDBNull(4) ? null : DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            reader.IsDBNull(6) ? null : reader.GetString(6));
+
+    public ConfigGenerationRecord? GetActiveConfig()
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT generation, config_sha256, document_json, applied_at
+            FROM config_generations ORDER BY generation DESC LIMIT 1;
+            """;
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ReadConfigGeneration(reader) : null;
+    }
+
+    public int InsertConfig(string configSha256, string documentJson)
+    {
+        using (var command = _connection.CreateCommand())
+        {
+            command.CommandText = """
+                INSERT INTO config_generations (config_sha256, document_json, applied_at)
+                VALUES ($config_sha256, $document_json, $applied_at);
+                """;
+            command.Parameters.AddWithValue("$config_sha256", configSha256);
+            command.Parameters.AddWithValue("$document_json", documentJson);
+            command.Parameters.AddWithValue("$applied_at", Timestamp(DateTimeOffset.UtcNow));
+            command.ExecuteNonQuery();
+        }
+
+        using var rowId = _connection.CreateCommand();
+        rowId.CommandText = "SELECT last_insert_rowid();";
+        return Convert.ToInt32(rowId.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    public ConfigGenerationRecord RollbackConfig()
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT generation, config_sha256, document_json, applied_at
+            FROM config_generations ORDER BY generation DESC LIMIT 2;
+            """;
+        using var reader = command.ExecuteReader();
+        var records = new List<ConfigGenerationRecord>();
+        while (reader.Read())
+        {
+            records.Add(ReadConfigGeneration(reader));
+        }
+
+        if (records.Count < 2)
+        {
+            throw new InvalidOperationException("no previous config generation to roll back to.");
+        }
+
+        var generation = InsertConfig(records[1].ConfigSha256, records[1].DocumentJson);
+        return new ConfigGenerationRecord(
+            generation,
+            records[1].ConfigSha256,
+            records[1].DocumentJson,
+            DateTimeOffset.UtcNow);
+    }
+
+    public IReadOnlyList<ConfigGenerationRecord> ReadConfigGenerations(int limit = 50)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT generation, config_sha256, document_json, applied_at
+            FROM config_generations ORDER BY generation DESC LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = command.ExecuteReader();
+        var records = new List<ConfigGenerationRecord>();
+        while (reader.Read())
+        {
+            records.Add(ReadConfigGeneration(reader));
+        }
+
+        return records;
+    }
+
+    private static ConfigGenerationRecord ReadConfigGeneration(Microsoft.Data.Sqlite.SqliteDataReader reader) =>
+        new(
+            reader.GetInt32(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            DateTimeOffset.Parse(reader.GetString(3), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind));
+
+    private static RulePack ReadRulePack(string packSha256, string manifestJson, string rulesJson)
+    {
+        var manifest = JsonSerializer.Deserialize<RulePackManifest>(manifestJson)
+            ?? throw new InvalidDataException($"rule pack '{packSha256}' has an empty manifest.");
+        var rules = JsonSerializer.Deserialize<Dictionary<string, string>>(rulesJson)
+            ?? throw new InvalidDataException($"rule pack '{packSha256}' has empty rules.");
+        if (!string.Equals(manifest.ComputeSha256(), packSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException($"rule pack '{packSha256}' manifest hash does not match.");
+        }
+
+        return new RulePack(packSha256, manifest, rules);
+    }
+
     public string? GetMeta(string key)
     {
         using var command = _connection.CreateCommand();
@@ -419,7 +901,19 @@ public sealed class SqliteEventStore : IDisposable
         BookmarkUpdate? bookmark,
         CoverageGap? gapBefore = null)
     {
+        if (IsIncarnationRevoked(value.Source.IncarnationId))
+        {
+            throw new InvalidOperationException(
+                $"sensor incarnation '{value.Source.IncarnationId}' is revoked; refusing to append.");
+        }
+
         using var transaction = _connection.BeginTransaction();
+        EnsureIncarnation(
+            value.SensorId,
+            value.HostId,
+            value.Source.IncarnationId,
+            value.ProcessedTime,
+            transaction);
 
         if (gapBefore is not null)
         {
@@ -461,10 +955,10 @@ public sealed class SqliteEventStore : IDisposable
             command.CommandText = """
                 INSERT OR IGNORE INTO alerts
                     (alert_id, rule_id, rule_version, engine_version, source_key,
-                     sensor_sequence, created_at, details_json)
+                     sensor_sequence, created_at, details_json, pack_id, pack_sha256)
                 VALUES
                     ($alert_id, $rule_id, $rule_version, $engine_version, $source_key,
-                     $sensor_sequence, $created_at, $details_json);
+                     $sensor_sequence, $created_at, $details_json, $pack_id, $pack_sha256);
                 """;
             command.Parameters.AddWithValue("$alert_id", alert.AlertId);
             command.Parameters.AddWithValue("$rule_id", alert.RuleId);
@@ -474,6 +968,8 @@ public sealed class SqliteEventStore : IDisposable
             command.Parameters.AddWithValue("$sensor_sequence", sequence);
             command.Parameters.AddWithValue("$created_at", Timestamp(alert.CreatedAt));
             command.Parameters.AddWithValue("$details_json", alert.DetailsJson);
+            command.Parameters.AddWithValue("$pack_id", (object?)alert.PackId ?? DBNull.Value);
+            command.Parameters.AddWithValue("$pack_sha256", (object?)alert.PackSha256 ?? DBNull.Value);
             command.ExecuteNonQuery();
         }
 
@@ -613,7 +1109,9 @@ public sealed class SqliteEventStore : IDisposable
                 reader.GetString(reader.GetOrdinal("source_key")),
                 reader.GetInt64(reader.GetOrdinal("sensor_sequence")),
                 DateTimeOffset.Parse(reader.GetString(reader.GetOrdinal("created_at")), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
-                reader.GetString(reader.GetOrdinal("details_json"))));
+                reader.GetString(reader.GetOrdinal("details_json")),
+                reader.IsDBNull(reader.GetOrdinal("pack_id")) ? null : reader.GetString(reader.GetOrdinal("pack_id")),
+                reader.IsDBNull(reader.GetOrdinal("pack_sha256")) ? null : reader.GetString(reader.GetOrdinal("pack_sha256"))));
         }
 
         return alerts;
@@ -966,6 +1464,13 @@ public sealed class SqliteEventStore : IDisposable
     /// Applies a page-count cap to this connection. Used by the bounded
     /// storage test to exercise SQLITE_FULL; it is not a retention policy.
     /// </summary>
+    public void Compact()
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = "VACUUM;";
+        command.ExecuteNonQuery();
+    }
+
     public void SetMaxPageCount(long pages)
     {
         if (pages <= 0)

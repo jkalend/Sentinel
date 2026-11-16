@@ -185,4 +185,40 @@ public class RetentionTests
             TestSupport.DeleteDatabase(path);
         }
     }
+
+    [Fact]
+    public void Compact_after_purge_preserves_counts_and_does_not_grow_the_file()
+    {
+        var path = TestSupport.NewDatabasePath();
+        try
+        {
+            using var store = new SqliteEventStore(path);
+            store.Initialize();
+            var fixture = TestSupport.Fixture();
+            var (sensorId, hostId) = store.EnsureIdentity(fixture.SensorId, fixture.HostId);
+            new IngestionService(store, sensorId, hostId).Ingest(
+                fixture.Records,
+                TestSupport.Rules(),
+                fixture.Channel,
+                fixture.IncarnationId,
+                fixture.ConfigGeneration,
+                fixture.GroundTruth);
+            store.Purge(
+                new RetentionPolicy(EventDays: 0, RawDays: 365, KeepEvents: 1),
+                DateTimeOffset.Parse("2026-12-31T00:00:00Z"),
+                apply: true);
+            var before = new FileInfo(path).Length;
+            var countsBefore = store.GetCounts();
+
+            store.Compact();
+
+            Assert.Equal(countsBefore, store.GetCounts());
+            Assert.True(new FileInfo(path).Length <= before);
+            Assert.NotNull(store.GetBookmark(SysmonXmlReader.SysmonChannel));
+        }
+        finally
+        {
+            TestSupport.DeleteDatabase(path);
+        }
+    }
 }

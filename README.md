@@ -2,7 +2,7 @@
 
 > Local-first security telemetry and detection: collect, normalize, detect, and investigate.
 
-**Status: V0.1–V0.4 lab/fixture validation; release 0.4.4 ships the 0.4.3 release tooling plus review fixes. Live V0.4.2 transport remains unrun.** A disposable Windows 11 Enterprise Evaluation 26H2 VM (build 26300, QEMU/KVM, built-in Sysmon) now runs the V0.2 first slice end to end. The latest harness cleared `data`/`capture` and returned `ok:true`: 2,710 clean-store events, 14 alerts, 0 gaps, 0 schema errors, replay 14/14, and a 2,972-file SATA capture. The installed `sentinel-reader` task stored 12 events before reboot and 308 at the continuation check (310 after the agent stopped), resumed the same sensor incarnation/bookmark, remained Running, and was torn down with the channel ACL, user rights, reader task, and resume task restored/removed. Earlier V0.1 evidence includes the 650-record retained-store run, the 1,428-event store, and the reader/task/installer checks. The retention/backup first implementation is host-verified against fixtures: audited age/size purge with raw-XML purge and timeline tombstones, plus online backup and fail-closed restore. V0.3 reproducible investigation runs and bounded local export are also host-verified: canonical manifests pin source/event/time/clock/mapping/schema/rule/engine identities, with manifest-only default and explicit payload export verification. V0.4 adds explicit local enrollment and a read-only multi-store host/coverage view that flags clock uncertainty and missing telemetry. V0.4.1 adds a versioned HTTP push envelope with token/allowlist checks, idempotent collector ingest, acknowledgement after commit, retry/offline behavior, and per-sensor collector stores consumable by the fleet view. V0.4.2 adds an in-guest transport harness and ISO; live execution is pending because Docker currently has no usable KVM. Rule packs, fleet configuration, and overhead measurements remain open. Engine ownership and the C#-only first artifact are decided ([D-0015](https://github.com/jkalend/project-planning/blob/main/decisions/0015-sentinel-engine-ownership.md), [D-0014](https://github.com/jkalend/project-planning/blob/main/decisions/0014-language-artifact-policy.md)).
+**Status: V0.1–V0.5 fixture validation; release 0.5.0 completes the core V0.2 rule-pack, config, identity, and compaction slice. Live V0.4.2 transport remains unrun.** A disposable Windows 11 Enterprise Evaluation 26H2 VM (build 26300, QEMU/KVM, built-in Sysmon) now runs the V0.2 first slice end to end. The latest harness cleared `data`/`capture` and returned `ok:true`: 2,710 clean-store events, 14 alerts, 0 gaps, 0 schema errors, replay 14/14, and a 2,972-file SATA capture. The installed `sentinel-reader` task stored 12 events before reboot and 308 at the continuation check (310 after the agent stopped), resumed the same sensor incarnation/bookmark, remained Running, and was torn down with the channel ACL, user rights, reader task, and resume task restored/removed. Earlier V0.1 evidence includes the 650-record retained-store run, the 1,428-event store, and the reader/task/installer checks. The retention/backup first implementation is host-verified against fixtures: audited age/size purge with raw-XML purge and timeline tombstones, plus online backup and fail-closed restore. V0.3 reproducible investigation runs and bounded local export are also host-verified: canonical manifests pin source/event/time/clock/mapping/schema/rule/engine identities, with manifest-only default and explicit payload export verification. V0.4 adds explicit local enrollment and a read-only multi-store host/coverage view that flags clock uncertainty and missing telemetry. V0.4.1 adds a versioned HTTP push envelope with token/allowlist checks, idempotent collector ingest, acknowledgement after commit, retry/offline behavior, and per-sensor collector stores consumable by the fleet view. V0.4.2 adds an in-guest transport harness and ISO; live execution is pending because Docker currently has no usable KVM. V0.5 adds rule packs, fleet configuration, identity rotation/revocation, and purge compaction. Overhead measurements, redaction lists, signed backup manifests, and crash-injection restore remain open. Engine ownership and the C#-only first artifact are decided ([D-0015](https://github.com/jkalend/project-planning/blob/main/decisions/0015-sentinel-engine-ownership.md), [D-0014](https://github.com/jkalend/project-planning/blob/main/decisions/0014-language-artifact-policy.md)).
 
 Canonical design: [sentinel](https://github.com/jkalend/project-planning/blob/main/projects/sentinel.md)
 
@@ -82,6 +82,8 @@ Sentinel/
 ├─ vm/                        unattended Windows lab harness (QEMU/BIOS)
 ├─ CHANGELOG.md               release history and known limits
 ├─ docs/release.md            versioning, artifacts, verification checklist
+├─ docs/roadmap.md            versioned roadmap through 0.9
+├─ docs/v05-v02-completion.md rule packs, config, identity, compaction
 ├─ docs/local-event-v1.md     frozen local contract
 ├─ docs/v01-windows-vm-runbook.md
 ├─ docs/v02-retention-backup.md
@@ -140,9 +142,11 @@ can exceed it before the next purge, and purge does not shrink the file; see
 [retention limits](docs/v02-retention-backup.md#limits). Change the day values
 with `-EventDays`, `-RawDays`, `-AlertDays`, `-HealthDays`, and `-GapDays`;
 remove the task with `-NoRetentionTask` (stops and unregisters it) or skip
-registration with `-NoTask`. A sensor is unbounded only when you opt out. Data
-is preserved when uninstalling unless `-RemoveData` is explicit, uninstall
-removes both tasks, and
+registration with `-NoTask`. The installer mints a protected `identity.json` in
+the install root (or reuses it on reinstall) and passes the sensor/host ids to
+the agent; `-SensorId` and `-HostId` override it. A sensor is unbounded only when you opt out. Data is
+preserved when uninstalling unless `-RemoveData` is explicit, uninstall removes
+both tasks, and
 teardown restores the saved channel ACL and user-rights policy:
 
 ```powershell
@@ -162,6 +166,30 @@ zip, preview `Sentinel.Core`/`Sentinel.Windows` NuGet packages,
 [CHANGELOG.md](CHANGELOG.md) for release history and
 [docs/release.md](docs/release.md) for the artifact layout, verification
 checklist, and explicit non-claims. Artifacts are unsigned.
+
+## Rule packs, config, and identity (0.5)
+
+```powershell
+# Package and activate the reviewed rules
+dotnet run --project src/sentinelctl -- rule-pack-build --rules rules --id sentinel.base --version 1 --output packs/base-1
+dotnet run --project src/sentinelctl -- rule-pack-install --pack packs/base-1 --db data/sentinel.db
+dotnet run --project src/sentinelctl -- rule-pack-activate --pack sentinel.base@1 --db data/sentinel.db
+
+# Pin a pack, retention policy, and collector allowlist
+dotnet run --project src/sentinelctl -- config-apply --db data/sentinel.db --file config.json
+dotnet run --project src/sentinelctl -- config-show --db data/sentinel.db
+dotnet run --project src/sentinelctl -- config-rollback --db data/sentinel.db
+
+# Rotate or revoke a sensor incarnation
+dotnet run --project src/sentinelctl -- identity-list --db data/sentinel.db
+dotnet run --project src/sentinelctl -- identity-rotate --db data/sentinel.db --reason "planned rotation"
+```
+
+Alerts and run manifests record the active pack id/hash. `replay`/`run`/the live
+agent use `--pack`, the config pin, or the active pack; `purge` uses the config
+retention unless overridden. See
+[V0.2 completion](docs/v05-v02-completion.md) for the contracts and remaining
+limits (unsigned packs/config, redaction, signed backups, crash-injection).
 
 ## Live collection (lab-validated; reader ACL/installer exercised)
 
@@ -193,6 +221,8 @@ Bespoke enforcement — host firewall, antivirus, EDR containment, IDS/IPS, WAF,
 
 ## Planning and research
 
+- [Version roadmap](docs/roadmap.md)
+- [V0.2 completion: packs, config, identity](docs/v05-v02-completion.md)
 - [Release process and verification](docs/release.md)
 - [Changelog](CHANGELOG.md)
 - [V0.4.2 in-guest transport harness](docs/v04.2-in-guest-transport.md)

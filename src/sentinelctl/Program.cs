@@ -2,6 +2,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Sentinel.Core.Cli;
+using Sentinel.Core.Config;
 using Sentinel.Core.Fixture;
 using Sentinel.Core.Fleet;
 using Sentinel.Core.Model;
@@ -16,6 +17,20 @@ using Sentinel.Core.Timeline;
 var commandOptions = new Dictionary<string, IReadOnlyDictionary<string, bool>>(StringComparer.OrdinalIgnoreCase)
 {
     ["init"] = Spec(("db", true), ("sensor-id", true), ("host-id", true)),
+    ["rule-pack-build"] = Spec(("rules", true), ("id", true), ("version", true), ("output", true)),
+    ["rule-pack-install"] = Spec(("pack", true), ("db", true)),
+    ["rule-pack-activate"] = Spec(("pack", true), ("db", true)),
+    ["rule-pack-rollback"] = Spec(("db", true)),
+    ["rule-pack-list"] = Spec(("db", true), ("format", true)),
+    ["rule-pack-show"] = Spec(("pack", true), ("db", true), ("format", true)),
+    ["config-apply"] = Spec(("db", true), ("file", true)),
+    ["config-show"] = Spec(("db", true), ("format", true)),
+    ["config-history"] = Spec(("db", true), ("limit", true), ("format", true)),
+    ["config-rollback"] = Spec(("db", true)),
+    ["config-drift"] = Spec(("db", true)),
+    ["identity-rotate"] = Spec(("db", true), ("source", true), ("reason", true)),
+    ["identity-revoke"] = Spec(("db", true), ("incarnation", true), ("reason", true)),
+    ["identity-list"] = Spec(("db", true), ("limit", true), ("format", true)),
     ["enroll"] = Spec(
         ("db", true), ("sensor-id", true), ("host-id", true), ("host-name", true),
         ("config-generation", true), ("clock-offset-ms", true), ("clock-uncertainty-ms", true)),
@@ -24,18 +39,20 @@ var commandOptions = new Dictionary<string, IReadOnlyDictionary<string, bool>>(S
     ["push"] = Spec(
         ("db", true), ("collector", true), ("token", true), ("batch-size", true), ("retries", true),
         ("reset-ack", false)),
-    ["ingest"] = Spec(("fixture", true), ("db", true), ("rules", true), ("sensor-id", true), ("host-id", true)),
+    ["ingest"] = Spec(
+        ("fixture", true), ("db", true), ("rules", true), ("pack", true), ("sensor-id", true), ("host-id", true)),
     ["timeline"] = Spec(("db", true)),
-    ["replay"] = Spec(("db", true), ("rules", true)),
+    ["replay"] = Spec(("db", true), ("rules", true), ("pack", true)),
     ["gaps"] = Spec(("db", true)),
     ["status"] = Spec(("db", true)),
     ["purge"] = Spec(
         ("db", true), ("event-days", true), ("raw-days", true), ("alert-days", true), ("health-days", true),
-        ("gap-days", true), ("keep-events", true), ("max-bytes", true), ("now", true), ("apply", false)),
+        ("gap-days", true), ("keep-events", true), ("max-bytes", true), ("now", true),
+        ("apply", false), ("compact", false)),
     ["purges"] = Spec(("db", true), ("limit", true)),
     ["run"] = Spec(
-        ("db", true), ("output", true), ("rules", true), ("schema", true), ("source-keys", true),
-        ("include-payload", false)),
+        ("db", true), ("output", true), ("rules", true), ("pack", true), ("schema", true),
+        ("source-keys", true), ("include-payload", false)),
     ["verify-run"] = Spec(("manifest", true), ("db", true)),
     ["backup"] = Spec(("db", true), ("output", true)),
     ["restore"] = Spec(("backup", true), ("db", true)),
@@ -63,6 +80,48 @@ try
     {
         case "init":
             Init(options);
+            break;
+        case "rule-pack-build":
+            RulePackBuild(options);
+            break;
+        case "rule-pack-install":
+            RulePackInstall(options);
+            break;
+        case "rule-pack-activate":
+            RulePackActivate(options);
+            break;
+        case "rule-pack-rollback":
+            RulePackRollback(options);
+            break;
+        case "rule-pack-list":
+            RulePackList(options);
+            break;
+        case "rule-pack-show":
+            RulePackShow(options);
+            break;
+        case "config-apply":
+            ConfigApply(options);
+            break;
+        case "config-show":
+            ConfigShow(options);
+            break;
+        case "config-history":
+            ConfigHistory(options);
+            break;
+        case "config-rollback":
+            ConfigRollback(options);
+            break;
+        case "config-drift":
+            exitCode = ConfigDrift(options);
+            break;
+        case "identity-rotate":
+            IdentityRotate(options);
+            break;
+        case "identity-revoke":
+            IdentityRevoke(options);
+            break;
+        case "identity-list":
+            IdentityList(options);
             break;
         case "enroll":
             Enroll(options);
@@ -164,6 +223,334 @@ static void Enroll(Dictionary<string, string?> options)
     Console.WriteLine($"clock_uncertainty_ms: {enrollment.ClockUncertaintyMs}");
 }
 
+static void RulePackBuild(Dictionary<string, string?> options)
+{
+    var rules = Get(options, "rules") ?? "rules";
+    var packId = Get(options, "id")
+        ?? throw new ArgumentException("--id is required.");
+    var version = Get(options, "version")
+        ?? throw new ArgumentException("--version is required.");
+    var output = Get(options, "output")
+        ?? throw new ArgumentException("--output is required.");
+
+    var pack = RulePackBuilder.Build(rules, packId, version);
+    RulePackBuilder.Write(pack, output);
+    Console.WriteLine($"pack: {pack.Manifest.PackId}@{pack.Manifest.Version}");
+    Console.WriteLine($"pack_sha256: {pack.PackSha256}");
+    Console.WriteLine($"rules: {pack.Manifest.Rules.Count}");
+    Console.WriteLine($"output: {Path.GetFullPath(output)}");
+}
+
+static void RulePackInstall(Dictionary<string, string?> options)
+{
+    var directory = Get(options, "pack")
+        ?? throw new ArgumentException("--pack is required.");
+    var pack = RulePackBuilder.LoadDirectory(directory);
+    using var store = OpenStore(options);
+    store.Initialize();
+    store.InstallRulePack(pack, Path.GetFullPath(directory));
+    Console.WriteLine($"installed: {pack.Manifest.PackId}@{pack.Manifest.Version}");
+    Console.WriteLine($"pack_sha256: {pack.PackSha256}");
+}
+
+static void RulePackActivate(Dictionary<string, string?> options)
+{
+    var reference = Get(options, "pack")
+        ?? throw new ArgumentException("--pack is required.");
+    using var store = OpenStore(options);
+    store.Initialize();
+    var pack = store.ResolveRulePack(reference)
+        ?? throw new ArgumentException($"rule pack '{reference}' is not installed.");
+    var generation = store.ActivateRulePack(pack.PackSha256);
+    Console.WriteLine($"active: {pack.Manifest.PackId}@{pack.Manifest.Version}");
+    Console.WriteLine($"pack_sha256: {pack.PackSha256}");
+    Console.WriteLine($"activation_generation: {generation}");
+}
+
+static void RulePackRollback(Dictionary<string, string?> options)
+{
+    using var store = OpenStore(options);
+    store.Initialize();
+    var pack = store.RollbackRulePack()
+        ?? throw new InvalidOperationException("no previous rule pack activation exists.");
+    var latest = store.ReadRulePackActivations(1);
+    Console.WriteLine($"active: {pack.Manifest.PackId}@{pack.Manifest.Version}");
+    Console.WriteLine($"pack_sha256: {pack.PackSha256}");
+    if (latest.Count > 0)
+    {
+        Console.WriteLine($"activation_generation: {latest[0].Generation}");
+    }
+}
+
+static void RulePackList(Dictionary<string, string?> options)
+{
+    using var store = OpenStore(options);
+    store.Initialize();
+    var packs = store.ListRulePacks();
+    var format = (Get(options, "format") ?? "table").ToLowerInvariant();
+    if (format == "json")
+    {
+        Console.Write(JsonSerializer.Serialize(packs, new JsonSerializerOptions { WriteIndented = true }));
+        return;
+    }
+
+    if (format != "table")
+    {
+        throw new ArgumentException("--format must be table or json.");
+    }
+
+    Console.WriteLine("PACK                                    ID                       VERSION  ACTIVE  INSTALLED");
+    foreach (var pack in packs)
+    {
+        Console.WriteLine(
+            $"{pack.PackSha256[..12],-12} {pack.PackId,-24} {pack.Version,-7} "
+            + $"{(pack.Active ? "yes" : "no"),-7} {pack.InstalledAt:O}");
+    }
+}
+
+static void RulePackShow(Dictionary<string, string?> options)
+{
+    var reference = Get(options, "pack")
+        ?? throw new ArgumentException("--pack is required.");
+    using var store = OpenStore(options);
+    store.Initialize();
+    var pack = store.ResolveRulePack(reference)
+        ?? throw new ArgumentException($"rule pack '{reference}' is not installed.");
+    var format = (Get(options, "format") ?? "table").ToLowerInvariant();
+    if (format == "json")
+    {
+        Console.Write(JsonSerializer.Serialize(pack.Manifest, new JsonSerializerOptions { WriteIndented = true }));
+        return;
+    }
+
+    if (format != "table")
+    {
+        throw new ArgumentException("--format must be table or json.");
+    }
+
+    Console.WriteLine($"pack: {pack.Manifest.PackId}@{pack.Manifest.Version}");
+    Console.WriteLine($"pack_sha256: {pack.PackSha256}");
+    Console.WriteLine($"engine: {pack.Manifest.EngineVersion}");
+    Console.WriteLine($"ocsf: {pack.Manifest.OcsfVersion}");
+    Console.WriteLine($"created: {pack.Manifest.CreatedAt:O}");
+    foreach (var rule in pack.Manifest.Rules.OrderBy(value => value.Id, StringComparer.Ordinal))
+    {
+        Console.WriteLine($"{rule.Id}@{rule.Version} {rule.File} {rule.Sha256}");
+    }
+}
+
+static void ConfigApply(Dictionary<string, string?> options)
+{
+    var file = Get(options, "file")
+        ?? throw new ArgumentException("--file is required.");
+    var config = FleetConfigService.LoadFile(file);
+    using var store = OpenStore(options);
+    store.Initialize();
+    var report = FleetConfigService.Apply(store, config);
+    Console.WriteLine($"generation: {report.Generation}");
+    Console.WriteLine($"config_sha256: {report.ConfigSha256}");
+    Console.WriteLine($"config_id: {report.Config.ConfigId}");
+    Console.WriteLine($"already_active: {report.AlreadyActive.ToString().ToLowerInvariant()}");
+    Console.WriteLine($"rule_pack_sha256: {report.Config.RulePackSha256 ?? "none"}");
+}
+
+static void ConfigShow(Dictionary<string, string?> options)
+{
+    using var store = OpenStore(options);
+    store.Initialize();
+    var active = store.GetActiveConfig()
+        ?? throw new InvalidOperationException("no active fleet configuration.");
+    var format = (Get(options, "format") ?? "table").ToLowerInvariant();
+    if (format == "json")
+    {
+        Console.Write(active.DocumentJson);
+        return;
+    }
+
+    if (format != "table")
+    {
+        throw new ArgumentException("--format must be table or json.");
+    }
+
+    var config = FleetConfigService.Parse(active.DocumentJson).Validate();
+    Console.WriteLine($"generation: {active.Generation}");
+    Console.WriteLine($"config_sha256: {active.ConfigSha256}");
+    Console.WriteLine($"config_id: {config.ConfigId}");
+    Console.WriteLine($"sensor_id: {config.SensorId ?? "any"}");
+    Console.WriteLine($"host_id: {config.HostId ?? "any"}");
+    Console.WriteLine($"rule_pack_sha256: {config.RulePackSha256 ?? "none"}");
+    Console.WriteLine($"retention: {config.Retention.CanonicalJson()}");
+    Console.WriteLine($"allowed_collectors: {(config.AllowedCollectors.Count == 0 ? "any" : string.Join(";", config.AllowedCollectors))}");
+    Console.WriteLine($"applied_at: {active.AppliedAt:O}");
+}
+
+static void ConfigHistory(Dictionary<string, string?> options)
+{
+    using var store = OpenStore(options);
+    store.Initialize();
+    var records = store.ReadConfigGenerations(Integer(options, "limit", 50));
+    var format = (Get(options, "format") ?? "table").ToLowerInvariant();
+    if (format == "json")
+    {
+        Console.Write(JsonSerializer.Serialize(
+            records.Select(value => new
+            {
+                generation = value.Generation,
+                config_sha256 = value.ConfigSha256,
+                applied_at = value.AppliedAt
+            }),
+            new JsonSerializerOptions { WriteIndented = true }));
+        return;
+    }
+
+    if (format != "table")
+    {
+        throw new ArgumentException("--format must be table or json.");
+    }
+
+    Console.WriteLine("GENERATION  SHA256        APPLIED");
+    foreach (var record in records)
+    {
+        Console.WriteLine($"{record.Generation,-11} {record.ConfigSha256[..12]}  {record.AppliedAt:O}");
+    }
+}
+
+static void ConfigRollback(Dictionary<string, string?> options)
+{
+    using var store = OpenStore(options);
+    store.Initialize();
+    var report = FleetConfigService.Rollback(store);
+    Console.WriteLine($"generation: {report.Generation}");
+    Console.WriteLine($"config_sha256: {report.ConfigSha256}");
+    Console.WriteLine($"config_id: {report.Config.ConfigId}");
+}
+
+static int ConfigDrift(Dictionary<string, string?> options)
+{
+    using var store = OpenStore(options);
+    store.Initialize();
+    var issues = FleetConfigService.Drift(store);
+    Console.WriteLine($"drift: {issues.Count}");
+    foreach (var issue in issues)
+    {
+        Console.WriteLine(issue);
+    }
+
+    return issues.Count == 0 ? 0 : 1;
+}
+
+static void IdentityRotate(Dictionary<string, string?> options)
+{
+    using var store = OpenStore(options);
+    store.Initialize();
+    var source = Get(options, "source") ?? SysmonXmlReader.SysmonChannel;
+    var rotated = store.RotateIncarnation(source, Get(options, "reason"));
+    Console.WriteLine($"incarnation: {rotated.IncarnationId}");
+    Console.WriteLine($"sensor_id: {rotated.SensorId}");
+    Console.WriteLine($"host_id: {rotated.HostId}");
+    Console.WriteLine($"created_at: {rotated.CreatedAt:O}");
+    var bookmark = store.GetBookmark(source);
+    if (bookmark is not null)
+    {
+        Console.WriteLine($"bookmark_incarnation: {bookmark.IncarnationId}");
+        Console.WriteLine($"bookmark_record_id: {bookmark.EventRecordId}");
+    }
+}
+
+static void IdentityRevoke(Dictionary<string, string?> options)
+{
+    var incarnation = Get(options, "incarnation")
+        ?? throw new ArgumentException("--incarnation is required.");
+    using var store = OpenStore(options);
+    store.Initialize();
+    if (!store.RevokeIncarnation(incarnation, Get(options, "reason")))
+    {
+        throw new ArgumentException($"incarnation '{incarnation}' was not found or is already revoked.");
+    }
+
+    Console.WriteLine($"revoked: {incarnation}");
+    Console.WriteLine($"currently_revoked: {store.IsIncarnationRevoked(incarnation).ToString().ToLowerInvariant()}");
+}
+
+static void IdentityList(Dictionary<string, string?> options)
+{
+    using var store = OpenStore(options);
+    store.Initialize();
+    var incarnations = store.ReadIncarnations(Integer(options, "limit", 50));
+    var format = (Get(options, "format") ?? "table").ToLowerInvariant();
+    if (format == "json")
+    {
+        Console.Write(JsonSerializer.Serialize(incarnations, new JsonSerializerOptions { WriteIndented = true }));
+        return;
+    }
+
+    if (format != "table")
+    {
+        throw new ArgumentException("--format must be table or json.");
+    }
+
+    Console.WriteLine("INCARNATION                           SENSOR            CREATED                  ENDED                    REVOKED                  REASON");
+    foreach (var item in incarnations)
+    {
+        Console.WriteLine(
+            $"{item.IncarnationId,-36} {item.SensorId,-16} {item.CreatedAt:O}  "
+            + $"{(item.EndedAt?.ToString("O") ?? "-"),-24} {(item.RevokedAt?.ToString("O") ?? "-"),-24} {item.Reason ?? ""}");
+    }
+}
+
+static RetentionPolicy? ActiveRetentionPolicy(SqliteEventStore store)
+{
+    var active = store.GetActiveConfig();
+    return active is null
+        ? null
+        : FleetConfigService.Parse(active.DocumentJson).Validate().Retention;
+}
+
+static bool HasRetentionOverride(Dictionary<string, string?> options) =>
+    options.ContainsKey("event-days")
+    || options.ContainsKey("raw-days")
+    || options.ContainsKey("alert-days")
+    || options.ContainsKey("health-days")
+    || options.ContainsKey("gap-days")
+    || options.ContainsKey("keep-events")
+    || options.ContainsKey("max-bytes");
+
+static RuleSet LoadRules(
+    Dictionary<string, string?> options,
+    SqliteEventStore store,
+    string defaultDirectory)
+{
+    if (Get(options, "pack") is { } reference)
+    {
+        var pack = store.ResolveRulePack(reference)
+            ?? throw new ArgumentException($"rule pack '{reference}' is not installed.");
+        return pack.ToRuleSet();
+    }
+
+    if (Get(options, "rules") is { } directory)
+    {
+        return RuleLoader.LoadDirectory(directory);
+    }
+
+    var activeConfig = store.GetActiveConfig();
+    if (activeConfig is not null)
+    {
+        var config = FleetConfigService.Parse(activeConfig.DocumentJson).Validate();
+        if (config.RulePackSha256 is not null)
+        {
+            var pinned = store.GetRulePack(config.RulePackSha256)
+                ?? throw new InvalidOperationException(
+                    $"active config pins missing rule pack '{config.RulePackSha256}'.");
+            return pinned.ToRuleSet();
+        }
+    }
+
+    var activePack = store.GetActiveRulePack();
+    return activePack is not null
+        ? activePack.ToRuleSet()
+        : RuleLoader.LoadDirectory(defaultDirectory);
+}
+
 static void Fleet(Dictionary<string, string?> options)
 {
     var paths = (Get(options, "dbs") ?? Get(options, "db")
@@ -209,8 +596,23 @@ static void Push(Dictionary<string, string?> options)
 {
     var collector = Get(options, "collector")
         ?? throw new ArgumentException("--collector is required.");
+    var database = Get(options, "db") ?? "data/sentinel.db";
+    using (var store = new SqliteEventStore(database))
+    {
+        store.Initialize();
+        var activeConfig = store.GetActiveConfig();
+        if (activeConfig is not null)
+        {
+            var config = FleetConfigService.Parse(activeConfig.DocumentJson).Validate();
+            if (!FleetConfigService.IsCollectorAllowed(config, collector))
+            {
+                throw new ArgumentException($"collector '{collector}' is not allowed by the active config.");
+            }
+        }
+    }
+
     var sender = new TransportSender(
-        Get(options, "db") ?? "data/sentinel.db",
+        database,
         collector,
         Get(options, "token"),
         Integer(options, "batch-size", 100),
@@ -231,12 +633,11 @@ static void Ingest(Dictionary<string, string?> options)
 {
     var fixturePath = Get(options, "fixture")
         ?? throw new ArgumentException("--fixture is required.");
-    var rulesPath = Get(options, "rules") ?? "rules";
 
     var fixture = FixtureSet.Load(fixturePath);
-    var rules = RuleLoader.LoadDirectory(rulesPath);
     using var store = OpenStore(options);
     store.Initialize();
+    var rules = LoadRules(options, store, "rules");
     var (sensorId, hostId) = store.EnsureIdentity(
         Get(options, "sensor-id") ?? fixture.SensorId,
         Get(options, "host-id") ?? fixture.HostId);
@@ -270,10 +671,9 @@ static void Timeline(Dictionary<string, string?> options)
 
 static void Replay(Dictionary<string, string?> options)
 {
-    var rulesPath = Get(options, "rules") ?? "rules";
-    var rules = RuleLoader.LoadDirectory(rulesPath);
     using var store = OpenStore(options);
     store.Initialize();
+    var rules = LoadRules(options, store, "rules");
     var report = ReplayService.Replay(store, rules);
     Console.WriteLine($"live_alerts: {report.LiveAlerts}");
     Console.WriteLine($"replay_alerts: {report.ReplayAlerts}");
@@ -342,22 +742,31 @@ static void Status(Dictionary<string, string?> options)
 
 static void Purge(Dictionary<string, string?> options)
 {
-    var policy = new RetentionPolicy(
-        Integer(options, "event-days", 30),
-        Integer(options, "raw-days", 7),
-        Integer(options, "alert-days", 90),
-        Integer(options, "health-days", 90),
-        Integer(options, "gap-days", 90),
-        Integer(options, "keep-events", 1000),
-        Long(options, "max-bytes", 10L * 1024 * 1024 * 1024));
+    using var store = OpenStore(options);
+    store.Initialize();
+
+    var configPolicy = ActiveRetentionPolicy(store);
+    var policy = HasRetentionOverride(options) || configPolicy is null
+        ? new RetentionPolicy(
+            Integer(options, "event-days", configPolicy?.EventDays ?? 30),
+            Integer(options, "raw-days", configPolicy?.RawDays ?? 7),
+            Integer(options, "alert-days", configPolicy?.AlertDays ?? 90),
+            Integer(options, "health-days", configPolicy?.SourceHealthDays ?? 90),
+            Integer(options, "gap-days", configPolicy?.GapDays ?? 90),
+            Integer(options, "keep-events", configPolicy?.KeepEvents ?? 1000),
+            Long(options, "max-bytes", configPolicy?.MaxBytes ?? 10L * 1024 * 1024 * 1024))
+        : configPolicy;
     var now = Get(options, "now") is { } text
         ? DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
         : DateTimeOffset.UtcNow;
     var apply = options.ContainsKey("apply");
+    var compact = options.ContainsKey("compact");
 
-    using var store = OpenStore(options);
-    store.Initialize();
     var report = store.Purge(policy, now, apply);
+    if (apply && compact)
+    {
+        store.Compact();
+    }
     Console.WriteLine($"mode: {(apply ? "apply" : "dry-run")}");
     Console.WriteLine($"policy: {policy.CanonicalJson()}");
     Console.WriteLine($"policy_sha256: {policy.Sha256()}");
@@ -439,10 +848,10 @@ static void Run(Dictionary<string, string?> options)
 {
     var output = Get(options, "output")
         ?? throw new ArgumentException("--output is required.");
-    var rules = RuleLoader.LoadDirectory(Get(options, "rules") ?? "rules");
     var schema = ResolveSchemaRoot(Get(options, "schema"));
     using var store = OpenStore(options);
     store.Initialize();
+    var rules = LoadRules(options, store, "rules");
     var selected = Get(options, "source-keys")?
         .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     var includePayload = options.ContainsKey("include-payload") || selected is { Length: > 0 };
@@ -617,24 +1026,38 @@ static void Usage()
     Console.WriteLine("sentinelctl <command> [options]");
     Console.WriteLine();
     Console.WriteLine("  init      --db <path> [--sensor-id <uuid>] [--host-id <uuid>]");
+    Console.WriteLine("  rule-pack-build    --rules <dir> --id <pack-id> --version <v> --output <dir>");
+    Console.WriteLine("  rule-pack-install  --pack <dir> --db <path>");
+    Console.WriteLine("  rule-pack-activate --pack <sha|id@version> --db <path>");
+    Console.WriteLine("  rule-pack-rollback --db <path>");
+    Console.WriteLine("  rule-pack-list     --db <path> [--format table|json]");
+    Console.WriteLine("  rule-pack-show     --pack <sha|id@version> --db <path> [--format table|json]");
+    Console.WriteLine("  config-apply       --db <path> --file <config.json>");
+    Console.WriteLine("  config-show        --db <path> [--format table|json]");
+    Console.WriteLine("  config-history     --db <path> [--limit <n>] [--format table|json]");
+    Console.WriteLine("  config-rollback    --db <path>");
+    Console.WriteLine("  config-drift       --db <path>");
+    Console.WriteLine("  identity-rotate    --db <path> [--source <channel>] [--reason <text>]");
+    Console.WriteLine("  identity-revoke    --db <path> --incarnation <uuid> [--reason <text>]");
+    Console.WriteLine("  identity-list      --db <path> [--limit <n>] [--format table|json]");
     Console.WriteLine("  enroll    --db <path> --sensor-id <id> --host-id <id> [--host-name <name>]");
     Console.WriteLine("            [--config-generation 1] [--clock-offset-ms 0] [--clock-uncertainty-ms 0]");
     Console.WriteLine("  fleet     --dbs <path;path> [--format table|json]");
     Console.WriteLine("  collector --listen <http://127.0.0.1:port/> --root <dir> [--rules <dir>]");
     Console.WriteLine("            [--token <token>] [--allow-sensors <id;id>]");
     Console.WriteLine("  push      --db <path> --collector <http://127.0.0.1:port/> [--token <token>] [--batch-size 100] [--retries 3] [--reset-ack]");
-    Console.WriteLine("  ingest    --fixture <dir> [--db <path>] [--rules <dir>] [--sensor-id <id>] [--host-id <id>]");
+    Console.WriteLine("  ingest    --fixture <dir> [--db <path>] [--rules <dir>|--pack <ref>] [--sensor-id <id>] [--host-id <id>]");
     Console.WriteLine("  timeline  [--db <path>]");
-    Console.WriteLine("  replay    [--db <path>] [--rules <dir>]");
+    Console.WriteLine("  replay    [--db <path>] [--rules <dir>|--pack <ref>]");
     Console.WriteLine("  gaps      [--db <path>]");
     Console.WriteLine("  status    [--db <path>]");
     Console.WriteLine("  purge     [--db <path>] [--event-days 30] [--raw-days 7] [--alert-days 90]");
     Console.WriteLine("            [--health-days 90] [--gap-days 90] [--keep-events 1000] [--max-bytes 10737418240]");
-    Console.WriteLine("            [--now <iso>] [--apply]");
+    Console.WriteLine("            [--now <iso>] [--apply] [--compact]");
     Console.WriteLine("  purges    [--db <path>] [--limit <n>]");
     Console.WriteLine("  backup    --db <path> --output <path>");
     Console.WriteLine("  restore   --backup <path> [--db <path>]");
-    Console.WriteLine("  run       --db <path> --output <dir> [--rules <dir>] [--schema <dir>]");
+    Console.WriteLine("  run       --db <path> --output <dir> [--rules <dir>|--pack <ref>] [--schema <dir>]");
     Console.WriteLine("            [--include-payload] [--source-keys <key;key>]");
     Console.WriteLine("  verify-run --manifest <path> [--db <path>]");
     Console.WriteLine("  verify    [--db <path>] [--schema <dir>]");

@@ -4,6 +4,40 @@ All notable changes to Sentinel. Versions are `0.x.y`; each release covers the
 whole repository (agent, control CLI, rules, and schemas). Release artifacts and
 their verification limits are described in [docs/release.md](docs/release.md).
 
+## [0.5.0] - 2026-11-16
+
+V0.2 completion: rule packs, fleet configuration, identity lifecycle, and
+retention compaction. No remote control plane.
+
+### Added
+
+- Content-addressed rule packs with manifest verification, install, activation,
+  rollback, and alert/run provenance. `rule-pack-*` commands; `--pack` on
+  `ingest`, `replay`, `run`, and the live agent.
+- Versioned fleet config documents with apply/history/rollback/drift. Config
+  pins the rule pack, retention policy, and allowed collectors; `purge`, `push`,
+  and rule loading enforce those fields.
+- `sensor_incarnations` with rotation/revocation; the agent refuses a revoked
+  incarnation. The installer mints or reuses a protected install-root
+  `identity.json` and passes
+  explicit sensor/host ids to the task.
+- `purge --apply --compact` for SQLite `VACUUM` after an audited purge.
+
+### Changed
+
+- Run manifests pin pack id/hash and alert pack provenance.
+- Existing databases receive additive pack/config/incarnation columns and
+  tables during `Initialize`.
+- `run`/`replay`/agent rule selection: explicit pack, explicit rules directory,
+  config pin, active pack, then default directory.
+
+### Limits
+
+- Rule packs and config documents are unsigned; redaction lists, signed backup
+  manifests, bookmark-age retention, and crash-injection restore remain open.
+- Installer task/identity changes are parser- and fixture-verified only; the VM
+  harness still needs KVM.
+
 ## [0.4.4] - 2026-11-16
 
 Patch release for the deep-review and CodeRabbit findings against 0.4.3.

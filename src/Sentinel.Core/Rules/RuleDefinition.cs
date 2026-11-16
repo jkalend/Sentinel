@@ -19,7 +19,8 @@ public sealed record RuleDefinition(
     string Version,
     string Title,
     IReadOnlyList<FieldCondition> Selection,
-    string SourcePath);
+    string SourcePath,
+    string? Sha256 = null);
 
 public sealed class UnsupportedRuleException : Exception
 {
@@ -33,8 +34,13 @@ public sealed class RuleSet
 {
     private readonly Dictionary<string, RuleDefinition> _rules;
 
-    public RuleSet(IEnumerable<RuleDefinition> rules)
+    public RuleSet(
+        IEnumerable<RuleDefinition> rules,
+        string? packId = null,
+        string? packSha256 = null)
     {
+        PackId = packId;
+        PackSha256 = packSha256;
         var list = rules.ToList();
         var duplicate = list
             .GroupBy(r => r.Id, StringComparer.Ordinal)
@@ -48,6 +54,10 @@ public sealed class RuleSet
     }
 
     public IReadOnlyCollection<RuleDefinition> Rules => _rules.Values;
+
+    public string? PackId { get; }
+
+    public string? PackSha256 { get; }
 }
 
 public sealed record RuleEventView(
@@ -139,21 +149,30 @@ public static class RuleEvaluator
             });
 
             alerts.Add(new AlertCandidate(
-                AlertId(rule.Id, rule.Version, value.SourceKey),
+                AlertId(rule.Id, rule.Version, value.SourceKey, rules.PackSha256),
                 rule.Id,
                 rule.Version,
                 SentinelVersions.EngineVersion,
                 value.SourceKey,
                 DateTimeOffset.UtcNow,
-                details));
+                details,
+                rules.PackId,
+                rules.PackSha256));
         }
 
         return alerts;
     }
 
-    public static string AlertId(string ruleId, string ruleVersion, string sourceKey)
+    public static string AlertId(
+        string ruleId,
+        string ruleVersion,
+        string sourceKey,
+        string? packSha256 = null)
     {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{ruleId}\n{ruleVersion}\n{sourceKey}"));
+        var identity = packSha256 is null
+            ? $"{ruleId}\n{ruleVersion}\n{sourceKey}"
+            : $"{ruleId}\n{ruleVersion}\n{packSha256}\n{sourceKey}";
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(identity));
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
