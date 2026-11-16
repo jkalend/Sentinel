@@ -102,6 +102,49 @@ public class RunTests
     }
 
     [Fact]
+    public void Signed_run_verifies_and_pins_custody_refs()
+    {
+        var database = TestSupport.NewDatabasePath();
+        var output = NewDirectory();
+        var keyPath = database + ".pem";
+        try
+        {
+            using var store = CreateStore(database);
+            BackupService.GenerateSigningKey(keyPath);
+            var manifest = RunService.Create(
+                store,
+                TestSupport.Rules(),
+                TestSupport.SchemaPath,
+                output,
+                signingPrivateKeyPem: File.ReadAllText(keyPath),
+                custodyRefs: ["custody://casebox/case-1"]);
+
+            Assert.NotNull(manifest.Signature);
+            Assert.NotNull(manifest.SigningPublicKeyPem);
+            Assert.Equal(["custody://casebox/case-1"], manifest.Export.CustodyRefs);
+            var verification = RunService.Verify(manifest, output);
+            Assert.True(verification.Ok);
+            Assert.True(verification.ManifestValid);
+
+            var manifestPath = Path.Combine(output, "manifest.json");
+            var document = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(manifestPath))!.AsObject();
+            document["run_id"] = Guid.NewGuid().ToString("D");
+            File.WriteAllText(manifestPath, document.ToJsonString());
+            var error = Assert.Throws<InvalidDataException>(() => RunService.ReadManifest(manifestPath));
+            Assert.Contains("signature", error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            TestSupport.DeleteDatabase(database);
+            DeleteDirectory(output);
+            if (File.Exists(keyPath))
+            {
+                File.Delete(keyPath);
+            }
+        }
+    }
+
+    [Fact]
     public void Redacted_payload_omits_raw_and_marks_fields()
     {
         var database = TestSupport.NewDatabasePath();
