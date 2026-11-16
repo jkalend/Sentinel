@@ -6,7 +6,7 @@ subset and one explicit long-retention mode.
 ## Sigma subset importer
 
 ```powershell
-sentinelctl sigma-import --input sigma-rules --output rules-imported
+sentinelctl sigma-import --input sigma-rules --output rules-imported [--force]
 sentinelctl rule-pack-build --rules rules-imported --id sigma.local --version 1 --output packs/sigma-1
 ```
 
@@ -21,14 +21,22 @@ Supported Sigma fields:
 | `Protocol` | `network.protocol` |
 
 Supported values: scalar equality, string list (`in`), and scalar/list
-`contains`, `startswith`, `endswith` modifiers (`contains_any` for lists). The
-detection condition must be exactly `selection`. `|all`, `|re`, modifier chains,
-correlation forms, and unmapped fields fail closed.
+`contains`, `startswith`, `endswith` modifiers (`contains_any`,
+`starts_with`, `ends_with` for lists). The detection condition must be exactly
+`selection`. `|all`, `|re`, modifier chains, correlation forms, repeated mapped
+fields, wildcard (`*`/`?`) values, CIDR IP values, and unmapped fields fail
+closed.
 
-The generated rule keeps the original Sigma id (prefixed `sigma.`), title,
-author, and license fields; the native evaluator ignores attribution metadata.
-This is not full Sigma compatibility and does not establish a false-positive
-rate.
+`logsource.category` is required: `process_creation` → `event.id=1`,
+`network_connection` → 3, `process_termination` → 5; other categories and
+non-Windows products are rejected. The generated rule keeps the original Sigma
+id, title, author, license, and logsource fields; the native evaluator ignores
+attribution metadata but enforces the `event.id` source guard.
+
+Imports require an empty output directory unless `--force`; duplicate output
+names and existing targets fail closed. The generated rule keeps the original
+Sigma id (prefixed `sigma.`). This is not full Sigma compatibility and does not
+establish a false-positive rate.
 
 ## Extended retention
 
@@ -54,5 +62,6 @@ indefinite-retention default.
 ## Verification
 
 `dotnet test Sentinel.slnx -c Release` covers supported Sigma import/evaluation,
-unsupported condition/field rejection, and extended-retention validation plus
-raw preservation. Full suite: 126 tests at this slice.
+unsupported condition/field, wildcard, duplicate-field, and collision rejection,
+logsource guards, list modifiers, and extended-retention validation plus raw
+preservation. Full suite at this slice: 126 tests; after 0.9.1 fixes: 134.

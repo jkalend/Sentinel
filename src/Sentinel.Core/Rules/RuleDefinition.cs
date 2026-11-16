@@ -28,6 +28,11 @@ public sealed class UnsupportedRuleException : Exception
         : base(message)
     {
     }
+
+    public UnsupportedRuleException(string message, Exception inner)
+        : base(message, inner)
+    {
+    }
 }
 
 public sealed class RuleSet
@@ -72,7 +77,8 @@ public sealed record RuleEventView(
     string? DestinationIp,
     int? DestinationPort,
     string? SourceIp,
-    int? SourcePort)
+    int? SourcePort,
+    int? SourceEventId)
 {
     public static RuleEventView From(LocalEvent value)
     {
@@ -92,11 +98,13 @@ public sealed record RuleEventView(
             value.Network?.DestinationIp,
             value.Network?.DestinationPort,
             value.Network?.SourceIp,
-            value.Network?.SourcePort);
+            value.Network?.SourcePort,
+            value.Source.EventId);
     }
 
     public string? Resolve(string field) => field switch
     {
+        "event.id" => SourceEventId?.ToString(CultureInfo.InvariantCulture),
         "process.name" => ProcessName,
         "process.cmd_line" => ProcessCmdLine,
         "process.file.path" => ProcessPath,

@@ -6,6 +6,35 @@ namespace Sentinel.Core.Tests;
 
 public class FleetConfigTests
 {
+
+    [Fact]
+    public void Legacy_config_hash_is_recognized_as_already_active()
+    {
+        var database = TestSupport.NewDatabasePath();
+        try
+        {
+            using var store = new SqliteEventStore(database);
+            store.Initialize();
+            var fixture = TestSupport.Fixture();
+            store.EnsureIdentity(fixture.SensorId, fixture.HostId);
+            var config = NewConfig(fixture.SensorId, fixture.HostId, null);
+            var legacy = config.ComputeLegacySha256();
+            Assert.NotEqual(legacy, config.ComputeSha256());
+            store.InsertConfig(legacy, System.Text.Json.JsonSerializer.Serialize(config));
+
+            var report = FleetConfigService.Apply(store, config);
+
+            Assert.True(report.AlreadyActive);
+            Assert.Equal(1, report.Generation);
+            Assert.Equal(legacy, report.ConfigSha256);
+            Assert.Single(store.ReadConfigGenerations());
+        }
+        finally
+        {
+            TestSupport.DeleteDatabase(database);
+        }
+    }
+
     [Fact]
     public void Apply_records_generation_pins_pack_and_is_idempotent()
     {

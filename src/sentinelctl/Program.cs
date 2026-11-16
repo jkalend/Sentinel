@@ -17,7 +17,7 @@ using Sentinel.Core.Timeline;
 var commandOptions = new Dictionary<string, IReadOnlyDictionary<string, bool>>(StringComparer.OrdinalIgnoreCase)
 {
     ["init"] = Spec(("db", true), ("sensor-id", true), ("host-id", true)),
-    ["sigma-import"] = Spec(("input", true), ("output", true)),
+    ["sigma-import"] = Spec(("input", true), ("output", true), ("force", false)),
     ["rule-pack-build"] = Spec(("rules", true), ("id", true), ("version", true), ("output", true)),
     ["rule-pack-install"] = Spec(("pack", true), ("db", true)),
     ["rule-pack-activate"] = Spec(("pack", true), ("db", true)),
@@ -238,7 +238,7 @@ static void SigmaImport(Dictionary<string, string?> options)
         ?? throw new ArgumentException("--input is required.");
     var output = Get(options, "output")
         ?? throw new ArgumentException("--output is required.");
-    var results = SigmaImporter.ImportDirectory(input, output);
+    var results = SigmaImporter.ImportDirectory(input, output, options.ContainsKey("force"));
     foreach (var result in results)
     {
         Console.WriteLine($"{Path.GetFileName(result.Source)} -> {Path.GetFileName(result.Output)} ({result.RuleId})");
@@ -402,25 +402,42 @@ static void ConfigShow(Dictionary<string, string?> options)
         Console.WriteLine("DB                                      GEN  SHA256        TENANT        CONFIG_ID");
         foreach (var path in paths)
         {
-            using var store = new SqliteEventStore(path);
-            var active = store.GetActiveConfig();
-            if (active is null)
+            if (!File.Exists(path))
             {
-                Console.WriteLine($"{ShortPath(path),-39} none");
+                Console.WriteLine($"{ShortPath(path),-39} missing");
                 continue;
             }
 
-            var config = FleetConfigService.Parse(active.DocumentJson).Validate();
-            Console.WriteLine(
-                $"{ShortPath(path),-39} {active.Generation,-4} {active.ConfigSha256[..12]} "
-                + $"{config.TenantId ?? "-",-12} {config.ConfigId}");
+            try
+            {
+                using var store = new SqliteEventStore(path, readOnly: true);
+                var active = store.GetActiveConfig();
+                if (active is null)
+                {
+                    Console.WriteLine($"{ShortPath(path),-39} none");
+                    continue;
+                }
+
+                var config = FleetConfigService.Parse(active.DocumentJson).Validate();
+                Console.WriteLine(
+                    $"{ShortPath(path),-39} {active.Generation,-4} {active.ConfigSha256[..12]} "
+                    + $"{config.TenantId ?? "-",-12} {config.ConfigId}");
+            }
+            catch (Exception error) when (error is Microsoft.Data.Sqlite.SqliteException or InvalidOperationException)
+            {
+                Console.WriteLine($"{ShortPath(path),-39} error: {error.Message}");
+            }
         }
 
         return;
     }
 
-    using var single = new SqliteEventStore(paths[0]);
-    single.Initialize();
+    if (!File.Exists(paths[0]))
+    {
+        throw new FileNotFoundException($"database not found: {paths[0]}");
+    }
+
+    using var single = new SqliteEventStore(paths[0], readOnly: true);
     var record = single.GetActiveConfig()
         ?? throw new InvalidOperationException("no active fleet configuration.");
     if (format == "json")
@@ -506,9 +523,23 @@ static int ConfigDrift(Dictionary<string, string?> options)
     return total == 0 ? 0 : 1;
 }
 
-static IReadOnlyList<string> StorePaths(Dictionary<string, string?> options) =>
-    (Get(options, "dbs") ?? Get(options, "db") ?? "data/sentinel.db")
-    .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+static IReadOnlyList<string> StorePaths(Dictionary<string, string?> options)
+{
+    var raw = (Get(options, "dbs") ?? Get(options, "db") ?? "data/sentinel.db")
+        .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (raw.Length == 0)
+    {
+        throw new ArgumentException("at least one database path is required in --dbs/--db.");
+    }
+
+    var comparer = OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
+    return raw
+        .Select(Path.GetFullPath)
+        .Distinct(comparer)
+        .ToList();
+}
 
 static string ShortPath(string path) =>
     Path.GetFileName(Path.GetDirectoryName(Path.GetFullPath(path))) + "/" + Path.GetFileName(path);
@@ -1133,7 +1164,7 @@ static void Usage()
     Console.WriteLine("sentinelctl <command> [options]");
     Console.WriteLine();
     Console.WriteLine("  init      --db <path> [--sensor-id <uuid>] [--host-id <uuid>]");
-    Console.WriteLine("  sigma-import       --input <dir> --output <dir>");
+    Console.WriteLine("  sigma-import       --input <dir> --output <dir> [--force]");
     Console.WriteLine("  rule-pack-build    --rules <dir> --id <pack-id> --version <v> --output <dir>");
     Console.WriteLine("  rule-pack-install  --pack <dir> --db <path>");
     Console.WriteLine("  rule-pack-activate --pack <sha|id@version> --db <path>");

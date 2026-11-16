@@ -40,4 +40,4 @@ external system; a reference is operator metadata.
 
 `dotnet test Sentinel.slnx -c Release` covers signed-manifest verification,
 tamper rejection, custody pinning, and existing unsigned/payload tests. Full
-suite: 128 tests at this slice.
+suite: 134 tests after the 0.9.1 fixes.
