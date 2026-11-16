@@ -4,7 +4,9 @@ All notable changes to Sentinel. Versions are `0.x.y`; each release covers the
 whole repository (agent, control CLI, rules, and schemas). Release artifacts and
 their verification limits are described in [docs/release.md](docs/release.md).
 
-## [Unreleased]
+## [0.4.4] - 2026-11-16
+
+Patch release for the deep-review and CodeRabbit findings against 0.4.3.
 
 ### Fixed
 
