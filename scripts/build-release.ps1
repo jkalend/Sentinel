@@ -10,7 +10,7 @@ and writes SHA256SUMS.txt plus release.json. No signing is performed.
 
 .EXAMPLE
 .\scripts\build-release.ps1
-.\scripts\build-release.ps1 -Version 0.7.0
+.\scripts\build-release.ps1 -Version 0.8.0
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(

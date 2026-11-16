@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using Sentinel.Core.Config;
 using Sentinel.Core.Model;
 using Sentinel.Core.Store;
 
@@ -28,7 +29,8 @@ public sealed record FleetHost(
     string ClockStatus,
     bool MissingTelemetry,
     bool NoActivityClaim,
-    string? Error);
+    string? Error,
+    string? TenantId = null);
 
 public sealed record FleetReport(IReadOnlyList<FleetHost> Hosts);
 
@@ -58,7 +60,7 @@ public static class FleetService
     public static string RenderTable(FleetReport report)
     {
         var builder = new StringBuilder();
-        builder.AppendLine("HOST            SENSOR            EVENTS ALERTS GAPS COVERAGE ORDER     CLOCK     LAST_EVENT");
+        builder.AppendLine("TENANT       HOST            SENSOR            EVENTS ALERTS GAPS COVERAGE ORDER     CLOCK     LAST_EVENT");
         foreach (var host in report.Hosts)
         {
             if (host.Error is not null)
@@ -68,6 +70,7 @@ public static class FleetService
             }
 
             builder.AppendLine(
+                $"{(host.TenantId ?? "-"),-12} " +
                 $"{Short(host.HostName ?? host.HostId ?? "?"),-15} " +
                 $"{Short(host.SensorId ?? "?"),-17} " +
                 $"{host.EventCount,6} {host.AlertCount,6} {host.GapCount,4} " +
@@ -92,6 +95,10 @@ public static class FleetService
 
             using var store = new SqliteEventStore(path, readOnly: true);
             var enrollment = store.GetEnrollment();
+            var activeConfig = store.GetActiveConfig();
+            var tenantId = activeConfig is null
+                ? null
+                : FleetConfigService.Parse(activeConfig.DocumentJson).TenantId;
             var events = store.ReadEvents();
             var alerts = store.ReadAlerts();
             var gaps = store.ReadGaps();
@@ -124,13 +131,14 @@ public static class FleetService
                 clock,
                 missing,
                 false,
-                null);
+                null,
+                tenantId);
         }
         catch (Exception error)
         {
             return new FleetHost(
                 path, null, null, null, null, 0, 0, 0, 0, 0, 0, null, null,
-                null, null, null, "unknown", "unknown", "unknown", true, false, error.Message);
+                null, null, null, "unknown", "unknown", "unknown", true, false, error.Message, null);
         }
     }
 

@@ -4,6 +4,26 @@ All notable changes to Sentinel. Versions are `0.x.y`; each release covers the
 whole repository (agent, control CLI, rules, and schemas). Release artifacts and
 their verification limits are described in [docs/release.md](docs/release.md).
 
+## [0.8.0] - 2026-11-16
+
+Fleet rollout and tenant metadata (bounded).
+
+### Added
+
+- `config-apply`, `config-rollback`, and `config-drift` accept `--dbs` and apply
+  the same document to multiple local stores.
+- `config-show --dbs` renders generation, hash, tenant, and config id per store.
+- `FleetConfig.TenantId` and the fleet table/JSON carry a tenant label sourced
+  from the active config. This is metadata, not isolation, SSO, or tenant policy.
+
+### Limits
+
+- Multi-tenancy isolation, SSO, and remote control-plane behavior remain with
+  the consuming platform; Sentinel does not enforce tenant boundaries.
+- Fleet rollout is local and fail-fast; no remote distribution or rollback
+  orchestration.
+- Tenant labels do not affect access, storage separation, or retention.
+
 ## [0.7.0] - 2026-11-16
 
 Detection and retention breadth (bounded).

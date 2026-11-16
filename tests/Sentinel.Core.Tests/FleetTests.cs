@@ -1,3 +1,4 @@
+using Sentinel.Core.Config;
 using Sentinel.Core.Fleet;
 using Sentinel.Core.Model;
 using Sentinel.Core.Store;
@@ -54,6 +55,51 @@ public class FleetTests
             TestSupport.DeleteDatabase(bPath);
         }
     }
+
+
+    [Fact]
+    public void Fleet_reports_tenant_from_active_config()
+    {
+        var aPath = TestSupport.NewDatabasePath();
+        var bPath = TestSupport.NewDatabasePath();
+        try
+        {
+            using (var a = Ingest(aPath, "sensor-a", "host-a"))
+            {
+                a.Enroll("sensor-a", "host-a", "alpha");
+                FleetConfigService.Apply(a, Config("tenant-a"));
+            }
+
+            using (var b = Ingest(bPath, "sensor-b", "host-b"))
+            {
+                b.Enroll("sensor-b", "host-b", "beta");
+                FleetConfigService.Apply(b, Config("tenant-b"));
+            }
+
+            var report = FleetService.Inspect([aPath, bPath]);
+            Assert.Equal(
+                new[] { "tenant-a", "tenant-b" },
+                report.Hosts.Select(host => host.TenantId).OrderBy(value => value).ToArray());
+            Assert.Contains("tenant-a", FleetService.RenderTable(report));
+        }
+        finally
+        {
+            TestSupport.DeleteDatabase(aPath);
+            TestSupport.DeleteDatabase(bPath);
+        }
+    }
+
+    private static FleetConfig Config(string tenant) =>
+        new(
+            FleetConfig.CurrentFormat,
+            "local",
+            null,
+            null,
+            null,
+            new RetentionPolicy(),
+            [],
+            DateTimeOffset.Parse("2026-11-16T00:00:00Z"),
+            tenant);
 
     [Fact]
     public void Fleet_marks_out_of_order_source_time_as_uncertain()

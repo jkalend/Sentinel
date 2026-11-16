@@ -13,7 +13,8 @@ public sealed record FleetConfig(
     [property: JsonPropertyName("rule_pack_sha256")] string? RulePackSha256,
     [property: JsonPropertyName("retention")] RetentionPolicy Retention,
     [property: JsonPropertyName("allowed_collectors")] IReadOnlyList<string> AllowedCollectors,
-    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt)
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("tenant_id")] string? TenantId = null)
 {
     public const string CurrentFormat = "sentinel.fleet-config/v1";
 
@@ -24,6 +25,7 @@ public sealed record FleetConfig(
             config_id = ConfigId,
             sensor_id = SensorId,
             host_id = HostId,
+            tenant_id = TenantId,
             rule_pack_sha256 = RulePackSha256,
             retention = new
             {
@@ -51,6 +53,12 @@ public sealed record FleetConfig(
         if (string.IsNullOrWhiteSpace(ConfigId))
         {
             throw new ArgumentException("config_id is required.");
+        }
+
+        if (TenantId is not null
+            && (TenantId.Length > 128 || TenantId.Any(char.IsControl)))
+        {
+            throw new ArgumentException("tenant_id must be at most 128 printable characters.");
         }
 
         if (Retention is null)
