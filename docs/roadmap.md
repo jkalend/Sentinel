@@ -5,8 +5,9 @@ means preview: the local event contract is frozen, operational behavior is not.
 Each minor release is one capability slice with fixtures and explicit limits;
 nothing is promoted from this document by implication.
 
-Current release: **0.6.0** — V0.1–V0.4 lab/fixture slices, release tooling, the
-core V0.2 completion, and the 0.6 event/evidence slice.
+Current release: **0.7.0** — V0.1–V0.4 lab/fixture slices, release tooling, the
+core V0.2 completion, the 0.6 event/evidence slice, and the 0.7 detection/
+retention slice.
 
 ## 0.5 — V0.2 completion
 
@@ -51,6 +52,10 @@ gated.
   reference.
 
 ## 0.7 — Detection and retention breadth
+
+**Partially implemented in 0.7.0:** bounded Sigma subset importer and opt-in
+extended raw retention. Full Sigma conformance, encryption at rest, quota/audit
+controls, and additional exports remain open.
 
 - Sigma importer with per-modifier and correlation conformance, pinned
   converter/pipeline versions, per-rule license/attribution retention, and a

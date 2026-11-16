@@ -221,4 +221,46 @@ public class RetentionTests
             TestSupport.DeleteDatabase(path);
         }
     }
+
+    [Fact]
+    public void Extended_retention_requires_explicit_flag_and_keeps_raw()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new RetentionPolicy(RawDays: -1).Validate());
+
+        var path = TestSupport.NewDatabasePath();
+        try
+        {
+            using var store = new SqliteEventStore(path);
+            store.Initialize();
+            var fixture = TestSupport.Fixture();
+            var (sensorId, hostId) = store.EnsureIdentity(fixture.SensorId, fixture.HostId);
+            new IngestionService(store, sensorId, hostId).Ingest(
+                fixture.Records,
+                TestSupport.Rules(),
+                fixture.Channel,
+                fixture.IncarnationId,
+                fixture.ConfigGeneration,
+                fixture.GroundTruth);
+
+            var report = store.Purge(
+                new RetentionPolicy(
+                    EventDays: 365,
+                    RawDays: -1,
+                    AlertDays: 365,
+                    SourceHealthDays: 365,
+                    GapDays: 365,
+                    ExtendedRetention: true),
+                DateTimeOffset.Parse("2026-12-31T00:00:00Z"),
+                apply: true);
+
+            Assert.Equal(0, report.RawXmlPurged);
+            Assert.Equal(10, store.GetCounts().Events);
+            Assert.All(store.ReadEvents(), value => Assert.Null(value.RawPurgedAt));
+        }
+        finally
+        {
+            TestSupport.DeleteDatabase(path);
+        }
+    }
 }

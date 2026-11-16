@@ -17,6 +17,7 @@ using Sentinel.Core.Timeline;
 var commandOptions = new Dictionary<string, IReadOnlyDictionary<string, bool>>(StringComparer.OrdinalIgnoreCase)
 {
     ["init"] = Spec(("db", true), ("sensor-id", true), ("host-id", true)),
+    ["sigma-import"] = Spec(("input", true), ("output", true)),
     ["rule-pack-build"] = Spec(("rules", true), ("id", true), ("version", true), ("output", true)),
     ["rule-pack-install"] = Spec(("pack", true), ("db", true)),
     ["rule-pack-activate"] = Spec(("pack", true), ("db", true)),
@@ -48,7 +49,7 @@ var commandOptions = new Dictionary<string, IReadOnlyDictionary<string, bool>>(S
     ["purge"] = Spec(
         ("db", true), ("event-days", true), ("raw-days", true), ("alert-days", true), ("health-days", true),
         ("gap-days", true), ("keep-events", true), ("max-bytes", true), ("now", true),
-        ("apply", false), ("compact", false)),
+        ("apply", false), ("compact", false), ("extended-retention", false)),
     ["purges"] = Spec(("db", true), ("limit", true)),
     ["run"] = Spec(
         ("db", true), ("output", true), ("rules", true), ("pack", true), ("schema", true),
@@ -81,6 +82,9 @@ try
     {
         case "init":
             Init(options);
+            break;
+        case "sigma-import":
+            SigmaImport(options);
             break;
         case "rule-pack-build":
             RulePackBuild(options);
@@ -225,6 +229,21 @@ static void Enroll(Dictionary<string, string?> options)
     Console.WriteLine($"host_name: {enrollment.HostName ?? ""}");
     Console.WriteLine($"clock_offset_ms: {enrollment.ClockOffsetMs}");
     Console.WriteLine($"clock_uncertainty_ms: {enrollment.ClockUncertaintyMs}");
+}
+
+static void SigmaImport(Dictionary<string, string?> options)
+{
+    var input = Get(options, "input")
+        ?? throw new ArgumentException("--input is required.");
+    var output = Get(options, "output")
+        ?? throw new ArgumentException("--output is required.");
+    var results = SigmaImporter.ImportDirectory(input, output);
+    foreach (var result in results)
+    {
+        Console.WriteLine($"{Path.GetFileName(result.Source)} -> {Path.GetFileName(result.Output)} ({result.RuleId})");
+    }
+
+    Console.WriteLine($"imported: {results.Count}");
 }
 
 static void RulePackBuild(Dictionary<string, string?> options)
@@ -517,7 +536,8 @@ static bool HasRetentionOverride(Dictionary<string, string?> options) =>
     || options.ContainsKey("health-days")
     || options.ContainsKey("gap-days")
     || options.ContainsKey("keep-events")
-    || options.ContainsKey("max-bytes");
+    || options.ContainsKey("max-bytes")
+    || options.ContainsKey("extended-retention");
 
 static RuleSet LoadRules(
     Dictionary<string, string?> options,
@@ -758,7 +778,8 @@ static void Purge(Dictionary<string, string?> options)
             Integer(options, "health-days", configPolicy?.SourceHealthDays ?? 90),
             Integer(options, "gap-days", configPolicy?.GapDays ?? 90),
             Integer(options, "keep-events", configPolicy?.KeepEvents ?? 1000),
-            Long(options, "max-bytes", configPolicy?.MaxBytes ?? 10L * 1024 * 1024 * 1024))
+            Long(options, "max-bytes", configPolicy?.MaxBytes ?? 10L * 1024 * 1024 * 1024),
+            options.ContainsKey("extended-retention") || (configPolicy?.ExtendedRetention ?? false))
         : configPolicy;
     var now = Get(options, "now") is { } text
         ? DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
@@ -1047,6 +1068,7 @@ static void Usage()
     Console.WriteLine("sentinelctl <command> [options]");
     Console.WriteLine();
     Console.WriteLine("  init      --db <path> [--sensor-id <uuid>] [--host-id <uuid>]");
+    Console.WriteLine("  sigma-import       --input <dir> --output <dir>");
     Console.WriteLine("  rule-pack-build    --rules <dir> --id <pack-id> --version <v> --output <dir>");
     Console.WriteLine("  rule-pack-install  --pack <dir> --db <path>");
     Console.WriteLine("  rule-pack-activate --pack <sha|id@version> --db <path>");
@@ -1074,7 +1096,7 @@ static void Usage()
     Console.WriteLine("  status    [--db <path>]");
     Console.WriteLine("  purge     [--db <path>] [--event-days 30] [--raw-days 7] [--alert-days 90]");
     Console.WriteLine("            [--health-days 90] [--gap-days 90] [--keep-events 1000] [--max-bytes 10737418240]");
-    Console.WriteLine("            [--now <iso>] [--apply] [--compact]");
+    Console.WriteLine("            [--now <iso>] [--apply] [--compact] [--extended-retention]");
     Console.WriteLine("  purges    [--db <path>] [--limit <n>]");
     Console.WriteLine("  backup    --db <path> --output <path> [--signing-key <pem>]");
     Console.WriteLine("  backup-keygen --output <pem>");

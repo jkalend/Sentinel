@@ -12,13 +12,21 @@ public sealed record RetentionPolicy(
     int SourceHealthDays = 90,
     int GapDays = 90,
     int KeepEvents = 1000,
-    long MaxBytes = 10L * 1024 * 1024 * 1024)
+    long MaxBytes = 10L * 1024 * 1024 * 1024,
+    bool ExtendedRetention = false)
 {
     public RetentionPolicy Validate()
     {
-        if (EventDays < 0 || RawDays < 0 || AlertDays < 0 || SourceHealthDays < 0 || GapDays < 0)
+        if (EventDays < 0 || AlertDays < 0 || SourceHealthDays < 0 || GapDays < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(RetentionPolicy), "Retention ages cannot be negative.");
+        }
+
+        if (RawDays < -1 || (RawDays < 0 && !ExtendedRetention))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(RetentionPolicy),
+                "RawDays=-1 requires ExtendedRetention=true; other retention ages cannot be negative.");
         }
 
         if (KeepEvents < 1)

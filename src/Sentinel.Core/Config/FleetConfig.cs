@@ -33,7 +33,8 @@ public sealed record FleetConfig(
                 source_health_days = Retention.SourceHealthDays,
                 gap_days = Retention.GapDays,
                 keep_events = Retention.KeepEvents,
-                max_bytes = Retention.MaxBytes
+                max_bytes = Retention.MaxBytes,
+                extended_retention = Retention.ExtendedRetention
             },
             allowed_collectors = AllowedCollectors
                 .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
