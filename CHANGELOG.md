@@ -4,6 +4,15 @@ All notable changes to Sentinel. Versions are `0.x.y`; each release covers the
 whole repository (agent, control CLI, rules, and schemas). Release artifacts and
 their verification limits are described in [docs/release.md](docs/release.md).
 
+## [0.5.1] - 2026-11-16
+
+### Fixed
+
+- Rule-pack and run rule hashes normalize CRLF to LF, so the same YAML produces
+  the same pack identity on Windows and LF checkouts. `.gitattributes` forces LF
+  for checked-out text; existing CRLF pack manifests remain loadable.
+- Corrected the roadmap's relative planning-decision link.
+
 ## [0.5.0] - 2026-11-16
 
 V0.2 completion: rule packs, fleet configuration, identity lifecycle, and
