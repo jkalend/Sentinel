@@ -20,10 +20,10 @@ The SATA result volume path works; earlier FAT/copy results are historical. The 
 1. Build the release bundle:
 
 ```powershell
-./scripts/build-release.ps1 -Version 0.7.0
+./scripts/build-release.ps1 -Version 0.8.0
 ```
 
-The script writes `publish/release-0.7.0/deploy/{agent,ctl,rules,schemas}` with
+The script writes `publish/release-0.8.0/deploy/{agent,ctl,rules,schemas}` with
 `SHA256SUMS.txt` and `release.json`. Each executable folder includes
 `e_sqlite3.dll`.
 

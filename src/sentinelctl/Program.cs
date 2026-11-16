@@ -24,11 +24,11 @@ var commandOptions = new Dictionary<string, IReadOnlyDictionary<string, bool>>(S
     ["rule-pack-rollback"] = Spec(("db", true)),
     ["rule-pack-list"] = Spec(("db", true), ("format", true)),
     ["rule-pack-show"] = Spec(("pack", true), ("db", true), ("format", true)),
-    ["config-apply"] = Spec(("db", true), ("file", true)),
-    ["config-show"] = Spec(("db", true), ("format", true)),
+    ["config-apply"] = Spec(("db", true), ("dbs", true), ("file", true)),
+    ["config-show"] = Spec(("db", true), ("dbs", true), ("format", true)),
     ["config-history"] = Spec(("db", true), ("limit", true), ("format", true)),
-    ["config-rollback"] = Spec(("db", true)),
-    ["config-drift"] = Spec(("db", true)),
+    ["config-rollback"] = Spec(("db", true), ("dbs", true)),
+    ["config-drift"] = Spec(("db", true), ("dbs", true)),
     ["identity-rotate"] = Spec(("db", true), ("source", true), ("reason", true)),
     ["identity-revoke"] = Spec(("db", true), ("incarnation", true), ("reason", true)),
     ["identity-list"] = Spec(("db", true), ("limit", true), ("format", true)),
@@ -367,44 +367,78 @@ static void ConfigApply(Dictionary<string, string?> options)
     var file = Get(options, "file")
         ?? throw new ArgumentException("--file is required.");
     var config = FleetConfigService.LoadFile(file);
-    using var store = OpenStore(options);
-    store.Initialize();
-    var report = FleetConfigService.Apply(store, config);
-    Console.WriteLine($"generation: {report.Generation}");
-    Console.WriteLine($"config_sha256: {report.ConfigSha256}");
-    Console.WriteLine($"config_id: {report.Config.ConfigId}");
-    Console.WriteLine($"already_active: {report.AlreadyActive.ToString().ToLowerInvariant()}");
-    Console.WriteLine($"rule_pack_sha256: {report.Config.RulePackSha256 ?? "none"}");
+    foreach (var path in StorePaths(options))
+    {
+        using var store = new SqliteEventStore(path);
+        store.Initialize();
+        var report = FleetConfigService.Apply(store, config);
+        Console.WriteLine($"db: {Path.GetFullPath(path)}");
+        Console.WriteLine($"generation: {report.Generation}");
+        Console.WriteLine($"config_sha256: {report.ConfigSha256}");
+        Console.WriteLine($"config_id: {report.Config.ConfigId}");
+        Console.WriteLine($"tenant_id: {report.Config.TenantId ?? "none"}");
+        Console.WriteLine($"already_active: {report.AlreadyActive.ToString().ToLowerInvariant()}");
+        Console.WriteLine($"rule_pack_sha256: {report.Config.RulePackSha256 ?? "none"}");
+    }
 }
 
 static void ConfigShow(Dictionary<string, string?> options)
 {
-    using var store = OpenStore(options);
-    store.Initialize();
-    var active = store.GetActiveConfig()
-        ?? throw new InvalidOperationException("no active fleet configuration.");
     var format = (Get(options, "format") ?? "table").ToLowerInvariant();
-    if (format == "json")
-    {
-        Console.Write(active.DocumentJson);
-        return;
-    }
-
-    if (format != "table")
+    if (format is not ("table" or "json"))
     {
         throw new ArgumentException("--format must be table or json.");
     }
 
-    var config = FleetConfigService.Parse(active.DocumentJson).Validate();
-    Console.WriteLine($"generation: {active.Generation}");
-    Console.WriteLine($"config_sha256: {active.ConfigSha256}");
-    Console.WriteLine($"config_id: {config.ConfigId}");
-    Console.WriteLine($"sensor_id: {config.SensorId ?? "any"}");
-    Console.WriteLine($"host_id: {config.HostId ?? "any"}");
-    Console.WriteLine($"rule_pack_sha256: {config.RulePackSha256 ?? "none"}");
-    Console.WriteLine($"retention: {config.Retention.CanonicalJson()}");
-    Console.WriteLine($"allowed_collectors: {(config.AllowedCollectors.Count == 0 ? "any" : string.Join(";", config.AllowedCollectors))}");
-    Console.WriteLine($"applied_at: {active.AppliedAt:O}");
+    var paths = StorePaths(options);
+    if (paths.Count > 1)
+    {
+        if (format != "table")
+        {
+            throw new ArgumentException("--format json is available for a single --db.");
+        }
+
+        Console.WriteLine("DB                                      GEN  SHA256        TENANT        CONFIG_ID");
+        foreach (var path in paths)
+        {
+            using var store = new SqliteEventStore(path);
+            var active = store.GetActiveConfig();
+            if (active is null)
+            {
+                Console.WriteLine($"{ShortPath(path),-39} none");
+                continue;
+            }
+
+            var config = FleetConfigService.Parse(active.DocumentJson).Validate();
+            Console.WriteLine(
+                $"{ShortPath(path),-39} {active.Generation,-4} {active.ConfigSha256[..12]} "
+                + $"{config.TenantId ?? "-",-12} {config.ConfigId}");
+        }
+
+        return;
+    }
+
+    using var single = new SqliteEventStore(paths[0]);
+    single.Initialize();
+    var record = single.GetActiveConfig()
+        ?? throw new InvalidOperationException("no active fleet configuration.");
+    if (format == "json")
+    {
+        Console.Write(record.DocumentJson);
+        return;
+    }
+
+    var current = FleetConfigService.Parse(record.DocumentJson).Validate();
+    Console.WriteLine($"generation: {record.Generation}");
+    Console.WriteLine($"config_sha256: {record.ConfigSha256}");
+    Console.WriteLine($"config_id: {current.ConfigId}");
+    Console.WriteLine($"tenant_id: {current.TenantId ?? "none"}");
+    Console.WriteLine($"sensor_id: {current.SensorId ?? "any"}");
+    Console.WriteLine($"host_id: {current.HostId ?? "any"}");
+    Console.WriteLine($"rule_pack_sha256: {current.RulePackSha256 ?? "none"}");
+    Console.WriteLine($"retention: {current.Retention.CanonicalJson()}");
+    Console.WriteLine($"allowed_collectors: {(current.AllowedCollectors.Count == 0 ? "any" : string.Join(";", current.AllowedCollectors))}");
+    Console.WriteLine($"applied_at: {record.AppliedAt:O}");
 }
 
 static void ConfigHistory(Dictionary<string, string?> options)
@@ -440,27 +474,43 @@ static void ConfigHistory(Dictionary<string, string?> options)
 
 static void ConfigRollback(Dictionary<string, string?> options)
 {
-    using var store = OpenStore(options);
-    store.Initialize();
-    var report = FleetConfigService.Rollback(store);
-    Console.WriteLine($"generation: {report.Generation}");
-    Console.WriteLine($"config_sha256: {report.ConfigSha256}");
-    Console.WriteLine($"config_id: {report.Config.ConfigId}");
+    foreach (var path in StorePaths(options))
+    {
+        using var store = new SqliteEventStore(path);
+        store.Initialize();
+        var report = FleetConfigService.Rollback(store);
+        Console.WriteLine($"db: {Path.GetFullPath(path)}");
+        Console.WriteLine($"generation: {report.Generation}");
+        Console.WriteLine($"config_sha256: {report.ConfigSha256}");
+        Console.WriteLine($"config_id: {report.Config.ConfigId}");
+    }
 }
 
 static int ConfigDrift(Dictionary<string, string?> options)
 {
-    using var store = OpenStore(options);
-    store.Initialize();
-    var issues = FleetConfigService.Drift(store);
-    Console.WriteLine($"drift: {issues.Count}");
-    foreach (var issue in issues)
+    var total = 0;
+    foreach (var path in StorePaths(options))
     {
-        Console.WriteLine(issue);
+        using var store = new SqliteEventStore(path);
+        store.Initialize();
+        var issues = FleetConfigService.Drift(store);
+        total += issues.Count;
+        Console.WriteLine($"db: {Path.GetFullPath(path)} drift: {issues.Count}");
+        foreach (var issue in issues)
+        {
+            Console.WriteLine(issue);
+        }
     }
 
-    return issues.Count == 0 ? 0 : 1;
+    return total == 0 ? 0 : 1;
 }
+
+static IReadOnlyList<string> StorePaths(Dictionary<string, string?> options) =>
+    (Get(options, "dbs") ?? Get(options, "db") ?? "data/sentinel.db")
+    .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+static string ShortPath(string path) =>
+    Path.GetFileName(Path.GetDirectoryName(Path.GetFullPath(path))) + "/" + Path.GetFileName(path);
 
 static void IdentityRotate(Dictionary<string, string?> options)
 {

@@ -5,7 +5,7 @@ means preview: the local event contract is frozen, operational behavior is not.
 Each minor release is one capability slice with fixtures and explicit limits;
 nothing is promoted from this document by implication.
 
-Current release: **0.7.0** — V0.1–V0.4 lab/fixture slices, release tooling, the
+Current release: **0.8.0** — V0.1–V0.4 lab/fixture slices, release tooling, the
 core V0.2 completion, the 0.6 event/evidence slice, and the 0.7 detection/
 retention slice.
 
@@ -67,6 +67,10 @@ controls, and additional exports remain open.
 - Additional export integrations, each with an explicit evidence/custody limit.
 
 ## 0.8 — Fleet and enterprise integration
+
+**Partially implemented in 0.8.0:** local multi-store config apply/rollback/
+drift and tenant labels in config and fleet output. Tenant isolation, SSO,
+remote rollout, and control-plane behavior remain external.
 
 - Multi-tenant/fleet control-plane integration for environments that need it.
   Isolation, SSO, and tenant policy belong to the consuming platform unless a
