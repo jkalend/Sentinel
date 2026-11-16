@@ -36,6 +36,19 @@ public sealed class AgentRunner
     {
         var (sensorId, hostId) = _store.EnsureIdentity(null, null);
         var bookmark = _store.GetBookmark(_sourceId);
+        var latestIncarnation = _store.GetLatestIncarnation();
+        if (bookmark is not null && _store.IsIncarnationRevoked(bookmark.IncarnationId))
+        {
+            throw new SourceUnavailableException(
+                $"sensor incarnation '{bookmark.IncarnationId}' is revoked; refusing to resume.");
+        }
+
+        if (bookmark is null && latestIncarnation?.RevokedAt is not null)
+        {
+            throw new SourceUnavailableException(
+                $"sensor incarnation '{latestIncarnation.IncarnationId}' is revoked; refusing to start.");
+        }
+
         if (bookmark is not null && string.IsNullOrEmpty(bookmark.BookmarkXml))
         {
             InsertGap(
@@ -70,7 +83,9 @@ public sealed class AgentRunner
 
         _store.SetSourceState(configuration);
 
-        var incarnationId = bookmark?.IncarnationId ?? Guid.NewGuid().ToString("D");
+        var incarnationId = bookmark?.IncarnationId
+            ?? _store.GetActiveIncarnation()?.IncarnationId
+            ?? Guid.NewGuid().ToString("D");
         var start = bookmark is null
             ? new SourceStart(SourceStartMode.OldestRetained, null, null, snapshotRecordId)
             : new SourceStart(SourceStartMode.Bookmark, bookmark.BookmarkXml, bookmark.EventRecordId, snapshotRecordId);

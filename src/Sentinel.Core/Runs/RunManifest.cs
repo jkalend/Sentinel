@@ -11,7 +11,11 @@ public sealed record RunIdentity(
     string Mapper,
     string SchemaSha256,
     string RulesSha256,
-    IReadOnlyList<RunRulePin> Rules);
+    IReadOnlyList<RunRulePin> Rules,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? PackId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? PackSha256 = null);
 
 public sealed record RunCoverage(
     int SourceCount,
@@ -60,7 +64,11 @@ public sealed record RunAlertPin(
     string SourceKey,
     long SensorSequence,
     string CreatedAt,
-    string DetailsSha256);
+    string DetailsSha256,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? PackId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? PackSha256 = null);
 
 public sealed record RunGapPin(
     string GapId,

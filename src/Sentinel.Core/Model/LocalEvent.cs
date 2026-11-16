@@ -117,7 +117,9 @@ public sealed record AlertCandidate(
     string EngineVersion,
     string SourceKey,
     DateTimeOffset CreatedAt,
-    string DetailsJson);
+    string DetailsJson,
+    string? PackId = null,
+    string? PackSha256 = null);
 
 public sealed record StoredAlert(
     string AlertId,
@@ -127,7 +129,18 @@ public sealed record StoredAlert(
     string SourceKey,
     long SensorSequence,
     DateTimeOffset CreatedAt,
-    string DetailsJson);
+    string DetailsJson,
+    string? PackId = null,
+    string? PackSha256 = null);
+
+public sealed record SensorIncarnation(
+    string IncarnationId,
+    string SensorId,
+    string HostId,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? EndedAt,
+    DateTimeOffset? RevokedAt,
+    string? Reason);
 
 public sealed record Bookmark(
     string SourceId,

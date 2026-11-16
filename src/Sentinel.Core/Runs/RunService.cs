@@ -64,7 +64,9 @@ public static class RunService
                 value.SourceKey,
                 value.SensorSequence,
                 Timestamp(value.CreatedAt),
-                CanonicalJson.HashText(value.DetailsJson)))
+                CanonicalJson.HashText(value.DetailsJson),
+                value.PackId,
+                value.PackSha256))
             .ToList();
         var gapPins = gaps
             .OrderBy(value => value.NotedAt)
@@ -367,7 +369,7 @@ public static class RunService
             .Select(value => new RunRulePin(
                 value.Id,
                 value.Version,
-                CanonicalJson.HashFile(value.SourcePath)))
+                value.Sha256 ?? CanonicalJson.HashFile(value.SourcePath)))
             .ToList();
         return new RunIdentity(
             SentinelVersions.EngineVersion,
@@ -376,7 +378,9 @@ public static class RunService
             SentinelVersions.MapperVersion,
             TreeHash(schemaRoot),
             CanonicalJson.Hash(rulePins),
-            rulePins);
+            rulePins,
+            rules.PackId,
+            rules.PackSha256);
     }
 
     private static IReadOnlyList<RunSourcePin> BuildSources(

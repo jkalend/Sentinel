@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Sentinel.Core.Cli;
+using Sentinel.Core.Config;
 using Sentinel.Core.Rules;
 using Sentinel.Core.Sources;
 using Sentinel.Core.Store;
@@ -10,7 +11,9 @@ using Sentinel.Windows;
 
 var commandOptions = new Dictionary<string, IReadOnlyDictionary<string, bool>>(StringComparer.OrdinalIgnoreCase)
 {
-    ["run"] = Spec(("db", true), ("rules", true), ("max-records", true), ("channel", true)),
+    ["run"] = Spec(
+        ("db", true), ("rules", true), ("pack", true), ("max-records", true), ("channel", true),
+        ("sensor-id", true), ("host-id", true)),
     ["capture"] = Spec(
         ("output", true), ("max-records", true), ("sensor-id", true), ("host-id", true), ("channel", true)),
     ["channel"] = Spec(("channel", true))
@@ -75,10 +78,19 @@ static void Run(Dictionary<string, string?> options, string channel)
     var databasePath = Get(options, "db") ?? "data/sentinel.db";
     var rulesPath = Get(options, "rules") ?? "rules";
     var maxRecords = ParseInt(Get(options, "max-records"));
-    var rules = RuleLoader.LoadDirectory(rulesPath);
 
     using var store = new SqliteEventStore(databasePath);
     store.Initialize();
+    if (Get(options, "sensor-id") is not null || Get(options, "host-id") is not null)
+    {
+        store.EnsureIdentity(Get(options, "sensor-id"), Get(options, "host-id"));
+    }
+
+    var activeConfig = store.GetActiveConfig();
+    var config = activeConfig is null
+        ? null
+        : FleetConfigService.Parse(activeConfig.DocumentJson).Validate();
+    var rules = LoadRules(options, store, config, rulesPath);
     using var source = new WindowsEventLogSource(channel);
     var runner = new AgentRunner(source, store, rules, channel);
 
@@ -90,7 +102,10 @@ static void Run(Dictionary<string, string?> options, string channel)
     };
 
     var report = runner.Run(
-        new AgentRunOptions(channel, InitialConfigGeneration: 1, MaxRecords: maxRecords),
+        new AgentRunOptions(
+            channel,
+            InitialConfigGeneration: activeConfig?.Generation ?? 1,
+            MaxRecords: maxRecords),
         cancellation.Token);
 
     Console.WriteLine($"database: {databasePath}");
@@ -174,6 +189,35 @@ static void Channel(Dictionary<string, string?> options, string channel)
     Console.WriteLine($"log_file_path: {configuration.LogFilePath ?? "unknown"}");
 }
 
+static RuleSet LoadRules(
+    Dictionary<string, string?> options,
+    SqliteEventStore store,
+    FleetConfig? config,
+    string defaultDirectory)
+{
+    if (Get(options, "pack") is { } reference)
+    {
+        var pack = store.ResolveRulePack(reference)
+            ?? throw new ArgumentException($"rule pack '{reference}' is not installed.");
+        return pack.ToRuleSet();
+    }
+
+    if (Get(options, "rules") is { } directory)
+    {
+        return RuleLoader.LoadDirectory(directory);
+    }
+
+    if (config?.RulePackSha256 is { } pinnedSha)
+    {
+        var pinned = store.GetRulePack(pinnedSha)
+            ?? throw new InvalidOperationException($"active config pins missing rule pack '{pinnedSha}'.");
+        return pinned.ToRuleSet();
+    }
+
+    var active = store.GetActiveRulePack();
+    return active is not null ? active.ToRuleSet() : RuleLoader.LoadDirectory(defaultDirectory);
+}
+
 static int? ParseInt(string? value)
 {
     if (string.IsNullOrWhiteSpace(value))
@@ -200,7 +244,8 @@ static void Usage()
 {
     Console.WriteLine("sentinel-agent <command> [options]");
     Console.WriteLine();
-    Console.WriteLine("  run      --db <path> [--rules <dir>] [--channel <name>] [--max-records <n>]");
+    Console.WriteLine("  run      --db <path> [--rules <dir>|--pack <ref>] [--channel <name>] [--max-records <n>]");
+    Console.WriteLine("           [--sensor-id <uuid>] [--host-id <uuid>]");
     Console.WriteLine("  capture  --output <dir> [--channel <name>] [--max-records <n>] [--sensor-id <uuid>] [--host-id <uuid>]");
     Console.WriteLine("  channel  [--channel <name>]");
 }

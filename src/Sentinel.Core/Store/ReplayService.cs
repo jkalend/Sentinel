@@ -23,22 +23,22 @@ public static class ReplayService
             .ToList();
 
         var liveKeys = live
-            .Select(alert => Key(alert.RuleId, alert.RuleVersion, alert.SourceKey))
+            .Select(alert => Key(alert.RuleId, alert.RuleVersion, alert.PackSha256, alert.SourceKey))
             .ToHashSet(StringComparer.Ordinal);
         var replayKeys = replay
-            .Select(alert => Key(alert.RuleId, alert.RuleVersion, alert.SourceKey))
+            .Select(alert => Key(alert.RuleId, alert.RuleVersion, alert.PackSha256, alert.SourceKey))
             .ToHashSet(StringComparer.Ordinal);
 
         var replayOnly = replay
-            .Where(alert => !liveKeys.Contains(Key(alert.RuleId, alert.RuleVersion, alert.SourceKey)))
+            .Where(alert => !liveKeys.Contains(Key(alert.RuleId, alert.RuleVersion, alert.PackSha256, alert.SourceKey)))
             .ToList();
         var liveOnly = live
-            .Where(alert => !replayKeys.Contains(Key(alert.RuleId, alert.RuleVersion, alert.SourceKey)))
+            .Where(alert => !replayKeys.Contains(Key(alert.RuleId, alert.RuleVersion, alert.PackSha256, alert.SourceKey)))
             .ToList();
 
         return new ReplayReport(live.Count, replay.Count, replayOnly, liveOnly);
     }
 
-    private static string Key(string ruleId, string ruleVersion, string sourceKey) =>
-        $"{ruleId}@{ruleVersion}|{sourceKey}";
+    private static string Key(string ruleId, string ruleVersion, string? packSha256, string sourceKey) =>
+        $"{ruleId}@{ruleVersion}|{packSha256 ?? "-"}|{sourceKey}";
 }

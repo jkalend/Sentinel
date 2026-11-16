@@ -283,6 +283,30 @@ public class AgentRunnerTests
         }
     }
 
+    [Fact]
+    public void Revoked_incarnation_refuses_to_start()
+    {
+        var path = TestSupport.NewDatabasePath();
+        try
+        {
+            using var store = new SqliteEventStore(path);
+            store.Initialize();
+            store.EnsureIdentity(null, null);
+            var rotated = store.RotateIncarnation(Channel, "test");
+            store.RevokeIncarnation(rotated.IncarnationId, "test");
+
+            var source = new FakeSource();
+            var runner = new AgentRunner(source, store, new RuleSet([]), Channel);
+
+            Assert.Throws<SourceUnavailableException>(() => runner.Run(new AgentRunOptions(Channel)));
+            Assert.Null(source.LastStart);
+        }
+        finally
+        {
+            TestSupport.DeleteDatabase(path);
+        }
+    }
+
     private static SysmonRecord ProcessRecord(long eventRecordId)
     {
         var fixture = TestSupport.Fixture();
