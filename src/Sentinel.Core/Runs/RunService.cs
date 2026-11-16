@@ -27,9 +27,12 @@ public static class RunService
         string outputDirectory,
         bool includePayload = false,
         IReadOnlyCollection<string>? selectedSourceKeys = null,
-        IReadOnlyCollection<string>? redactedFields = null)
+        IReadOnlyCollection<string>? redactedFields = null,
+        string? signingPrivateKeyPem = null,
+        IReadOnlyCollection<string>? custodyRefs = null)
     {
         var redactions = NormalizeRedactions(redactedFields);
+        var custody = NormalizeCustodyRefs(custodyRefs);
         if (redactions.Count > 0 && !includePayload)
         {
             throw new ArgumentException("redaction requires payload export.");
@@ -150,7 +153,8 @@ public static class RunService
             payloadFile,
             payloadHash,
             selection?.Order(StringComparer.Ordinal).ToList(),
-            redactions.Count == 0 ? null : redactions);
+            redactions.Count == 0 ? null : redactions,
+            custody.Count == 0 ? null : custody);
         var manifest = new RunManifest(
             Format,
             Guid.NewGuid().ToString("D"),
@@ -165,7 +169,20 @@ public static class RunService
             string.Empty,
             string.Empty);
         manifest = manifest with { ContentSha256 = CanonicalJson.Hash(Content(manifest)) };
-        manifest = manifest with { ManifestSha256 = CanonicalJson.Hash(manifest with { ManifestSha256 = string.Empty }) };
+        manifest = manifest with { ManifestSha256 = CanonicalJson.Hash(ForManifestHash(manifest)) };
+
+        if (!string.IsNullOrWhiteSpace(signingPrivateKeyPem))
+        {
+            using var key = ECDsa.Create();
+            key.ImportFromPem(signingPrivateKeyPem);
+            manifest = manifest with { SigningPublicKeyPem = key.ExportSubjectPublicKeyInfoPem() };
+            var payload = Encoding.UTF8.GetBytes(CanonicalJson.Serialize(manifest with { Signature = null }));
+            var signature = key.SignData(
+                payload,
+                HashAlgorithmName.SHA256,
+                DSASignatureFormat.Rfc3279DerSequence);
+            manifest = manifest with { Signature = Convert.ToBase64String(signature) };
+        }
 
         var manifestPath = Path.Combine(output, "manifest.json");
         File.WriteAllText(
@@ -202,7 +219,8 @@ public static class RunService
         }
 
         var sidecar = File.ReadAllText(hashPath).Trim();
-        var expected = CanonicalJson.Hash(manifest with { ManifestSha256 = string.Empty });
+        ValidateSignature(manifest);
+        var expected = CanonicalJson.Hash(ForManifestHash(manifest));
         if (!string.Equals(sidecar, expected, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(manifest.ManifestSha256, expected, StringComparison.OrdinalIgnoreCase))
         {
@@ -231,7 +249,17 @@ public static class RunService
         var changed = 0;
         var redacted = 0;
 
-        var expectedManifest = CanonicalJson.Hash(manifest with { ManifestSha256 = string.Empty });
+        try
+        {
+            ValidateSignature(manifest);
+        }
+        catch (InvalidDataException error)
+        {
+            manifestValid = false;
+            messages.Add(error.Message);
+        }
+
+        var expectedManifest = CanonicalJson.Hash(ForManifestHash(manifest));
         if (!string.Equals(expectedManifest, manifest.ManifestSha256, StringComparison.OrdinalIgnoreCase))
         {
             manifestValid = false;
@@ -445,6 +473,69 @@ public static class RunService
         value.RawPurgedAt is null ? null : Timestamp(value.RawPurgedAt.Value),
         false,
         null);
+
+    private static RunManifest ForManifestHash(RunManifest manifest) => manifest with
+    {
+        ManifestSha256 = string.Empty,
+        SigningPublicKeyPem = null,
+        Signature = null
+    };
+
+    private static void ValidateSignature(RunManifest manifest)
+    {
+        if (manifest.SigningPublicKeyPem is null && manifest.Signature is null)
+        {
+            return;
+        }
+
+        if (manifest.SigningPublicKeyPem is null || manifest.Signature is null)
+        {
+            throw new InvalidDataException("run manifest has an incomplete signature.");
+        }
+
+        byte[] signature;
+        try
+        {
+            signature = Convert.FromBase64String(manifest.Signature);
+        }
+        catch (FormatException ex)
+        {
+            throw new InvalidDataException("run manifest signature is not valid base64.", ex);
+        }
+
+        using var key = ECDsa.Create();
+        key.ImportFromPem(manifest.SigningPublicKeyPem);
+        var payload = Encoding.UTF8.GetBytes(CanonicalJson.Serialize(manifest with { Signature = null }));
+        if (!key.VerifyData(
+                payload,
+                signature,
+                HashAlgorithmName.SHA256,
+                DSASignatureFormat.Rfc3279DerSequence))
+        {
+            throw new InvalidDataException("run manifest signature does not match.");
+        }
+    }
+
+    private static IReadOnlyList<string> NormalizeCustodyRefs(IReadOnlyCollection<string>? refs)
+    {
+        if (refs is null || refs.Count == 0)
+        {
+            return [];
+        }
+
+        var result = refs
+            .Select(value => value.Trim())
+            .Where(value => value.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToList();
+        if (result.Any(value => value.Length > 512 || value.Any(char.IsControl)))
+        {
+            throw new ArgumentException("custody references must be at most 512 printable characters.");
+        }
+
+        return result;
+    }
 
     private static RunPayload Payload(LocalEvent value, IReadOnlyCollection<string> redactions)
     {

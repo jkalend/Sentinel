@@ -4,6 +4,30 @@ All notable changes to Sentinel. Versions are `0.x.y`; each release covers the
 whole repository (agent, control CLI, rules, and schemas). Release artifacts and
 their verification limits are described in [docs/release.md](docs/release.md).
 
+## [0.9.0] - 2026-11-16
+
+Signed evidence handoff (bounded).
+
+### Added
+
+- `run --signing-key <pem>` signs the run manifest with ECDSA P-256; the public
+  key is embedded and `verify-run` validates the signature and manifest hash.
+- `run --custody-ref <uri;uri>` pins external custody references in
+  `export.custody_refs`. Sentinel records them; it does not contact or verify the
+  external system.
+- `backup-keygen` remains the local key generator for backup and run signatures.
+
+### Limits
+
+- Custody references are metadata; no WORM, retention enforcement, access
+  control, legal admissibility, or external custody integration is implemented.
+- Keys are local files with operator-managed permissions; no key rotation or
+  trust-anchor lifecycle.
+- Run signatures cover the manifest, not every payload line; payload hashes are
+  pinned separately.
+- SSO, tenant isolation, remote fleet rollout, and live VM execution remain
+  external/unrun.
+
 ## [0.8.0] - 2026-11-16
 
 Fleet rollout and tenant metadata (bounded).

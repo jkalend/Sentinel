@@ -88,7 +88,9 @@ public sealed record RunExport(
     string? PayloadSha256,
     IReadOnlyList<string>? SelectedSourceKeys = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<string>? RedactedFields = null);
+    IReadOnlyList<string>? RedactedFields = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? CustodyRefs = null);
 
 public sealed record RunContent(
     RunIdentity Identity,
@@ -111,7 +113,11 @@ public sealed record RunManifest(
     IReadOnlyList<RunGapPin> Gaps,
     RunExport Export,
     string ContentSha256,
-    string ManifestSha256);
+    string ManifestSha256,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? SigningPublicKeyPem = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Signature = null);
 
 public sealed record RunPayload(
     string SourceKey,

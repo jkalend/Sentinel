@@ -5,9 +5,9 @@ means preview: the local event contract is frozen, operational behavior is not.
 Each minor release is one capability slice with fixtures and explicit limits;
 nothing is promoted from this document by implication.
 
-Current release: **0.8.0** — V0.1–V0.4 lab/fixture slices, release tooling, the
-core V0.2 completion, the 0.6 event/evidence slice, and the 0.7 detection/
-retention slice.
+Current release: **0.9.0** — V0.1–V0.9 fixture-validated slices: engine, release
+tooling, V0.2 completion, event/evidence hardening, Sigma/retention, local fleet
+config, and signed evidence handoff.
 
 ## 0.5 — V0.2 completion
 
@@ -79,6 +79,10 @@ remote rollout, and control-plane behavior remain external.
   remote shell.
 
 ## 0.9 — External custody and signing
+
+**Partially implemented in 0.9.0:** ECDSA-signed run manifests and pinned
+custody references. WORM enforcement, external custody verification, and key
+lifecycle remain external.
 
 - Signed exports and external WORM/custody integration through Casebox, Sable,
   or an operator-provided archive. Sentinel records hashes, signatures, and

@@ -53,7 +53,8 @@ var commandOptions = new Dictionary<string, IReadOnlyDictionary<string, bool>>(S
     ["purges"] = Spec(("db", true), ("limit", true)),
     ["run"] = Spec(
         ("db", true), ("output", true), ("rules", true), ("pack", true), ("schema", true),
-        ("source-keys", true), ("redact", true), ("include-payload", false)),
+        ("source-keys", true), ("redact", true), ("signing-key", true), ("custody-ref", true),
+        ("include-payload", false)),
     ["verify-run"] = Spec(("manifest", true), ("db", true)),
     ["backup"] = Spec(("db", true), ("output", true), ("signing-key", true)),
     ["backup-keygen"] = Spec(("output", true)),
@@ -947,7 +948,21 @@ static void Run(Dictionary<string, string?> options)
     var includePayload = options.ContainsKey("include-payload")
         || selected is { Length: > 0 }
         || redacted is { Length: > 0 };
-    var manifest = RunService.Create(store, rules, schema, output, includePayload, selected, redacted);
+    var signingKey = Get(options, "signing-key") is { } signingKeyPath
+        ? File.ReadAllText(signingKeyPath)
+        : null;
+    var custodyRefs = Get(options, "custody-ref")?
+        .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    var manifest = RunService.Create(
+        store,
+        rules,
+        schema,
+        output,
+        includePayload,
+        selected,
+        redacted,
+        signingKey,
+        custodyRefs);
     Console.WriteLine($"run_id: {manifest.RunId}");
     Console.WriteLine($"manifest: {Path.Combine(Path.GetFullPath(output), "manifest.json")}");
     Console.WriteLine($"content_sha256: {manifest.ContentSha256}");
@@ -1154,6 +1169,7 @@ static void Usage()
     Console.WriteLine("  run       --db <path> --output <dir> [--rules <dir>|--pack <ref>] [--schema <dir>]");
     Console.WriteLine("            [--include-payload] [--source-keys <key;key>]");
     Console.WriteLine("            [--redact raw_xml;process.cmd_line;process.path;user.name]");
+    Console.WriteLine("            [--signing-key <pem>] [--custody-ref <uri;uri>]");
     Console.WriteLine("  verify-run --manifest <path> [--db <path>]");
     Console.WriteLine("  verify    [--db <path>] [--schema <dir>]");
 }
