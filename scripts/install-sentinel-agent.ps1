@@ -10,9 +10,10 @@ reader write access only to data/capture, and registers a startup scheduled
 task that runs the agent as the reader.
 
 Unless -NoRetentionTask is used, it also registers a daily SentinelRetention
-task that runs `sentinelctl purge --apply` as SYSTEM with 30-day normalized
-events, 7-day raw XML, and 90-day alerts/source-health/gaps. Use the day
-parameters to change the policy; -NoTask skips both scheduled tasks.
+task that runs `sentinelctl purge --apply` as the reader account with 30-day
+normalized events, 7-day raw XML, and 90-day alerts/source-health/gaps. Use the
+day parameters to change the policy; -NoRetentionTask stops and removes an
+existing retention task; -NoTask skips task registration.
 
 The installer does not install Sysmon itself. Install and configure Sysmon
 first; see docs/v01-windows-vm-runbook.md.
@@ -236,7 +237,14 @@ try {
         }
     }
 
-    if (-not $NoTask -and -not $NoRetentionTask) {
+    if ($NoRetentionTask) {
+        $existingRetention = Get-ScheduledTask -TaskName $RetentionTaskName -ErrorAction SilentlyContinue
+        if ($existingRetention) {
+            Stop-ScheduledTask -TaskName $RetentionTaskName -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName $RetentionTaskName -Confirm:$false
+        }
+    }
+    elseif (-not $NoTask) {
         $ctlExe = Join-Path $install 'ctl\sentinelctl.exe'
         $retentionLog = Join-Path $data 'retention.log'
         $purgeArguments = '/c ""' + $ctlExe + '" purge --db "' + $dbPath + '"' +
@@ -256,11 +264,17 @@ try {
             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
             -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
             -MultipleInstances IgnoreNew -StartWhenAvailable
-        $retentionPrincipal = New-ScheduledTaskPrincipal `
-            -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-        Register-ScheduledTask -TaskName $RetentionTaskName `
-            -Action $retentionAction -Trigger $retentionTrigger `
-            -Settings $retentionSettings -Principal $retentionPrincipal -Force | Out-Null
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($ReaderPassword)
+        try {
+            $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+            Register-ScheduledTask -TaskName $RetentionTaskName `
+                -Action $retentionAction -Trigger $retentionTrigger `
+                -Settings $retentionSettings -User $ReaderUser -Password $plain `
+                -RunLevel Limited -Force | Out-Null
+        }
+        finally {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
     }
 }
 catch {
@@ -281,13 +295,8 @@ $taskInfo = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyConti
     channel_acl_after = Get-ChannelAcl -Name $Channel
     task = $state
     task_info = $taskInfo
-    retention_task = if ($NoTask -or $NoRetentionTask) {
-        $null
-    }
-    else {
-        Get-ScheduledTask -TaskName $RetentionTaskName -ErrorAction SilentlyContinue |
-            Select-Object TaskName, State
-    }
+    retention_task = Get-ScheduledTask -TaskName $RetentionTaskName -ErrorAction SilentlyContinue |
+        Select-Object TaskName, State
     agent_log = Join-Path $data 'agent.log'
     retention_log = Join-Path $data 'retention.log'
     data = $data

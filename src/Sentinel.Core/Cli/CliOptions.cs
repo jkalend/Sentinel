@@ -26,6 +26,11 @@ public static class CliOptions
                 throw new ArgumentException("Empty option name.");
             }
 
+            if (options.ContainsKey(key))
+            {
+                throw new ArgumentException($"option '--{key}' was specified more than once.");
+            }
+
             if (index + 1 < args.Count && !args[index + 1].StartsWith("--", StringComparison.Ordinal))
             {
                 options[key] = args[++index];

@@ -132,13 +132,17 @@ startup scheduled task, and grants the reader the local batch-logon right needed
 for a non-interactive start. The task stores the reader password; treat it as a
 local secret.
 
-It also registers a daily `SentinelRetention` task (SYSTEM, 03:15) that runs
-`sentinelctl purge --apply` with 30-day normalized events, 7-day raw XML, and
-90-day alerts/source-health/gaps, keeping at least 1,000 events within a 10 GiB
-cap. Change the day values with `-EventDays`, `-RawDays`, `-AlertDays`,
-`-HealthDays`, and `-GapDays`; skip the task with `-NoRetentionTask` or
-`-NoTask`. A sensor is unbounded only when you opt out. Data is preserved when
-uninstalling unless `-RemoveData` is explicit, uninstall removes both tasks, and
+It also registers a daily `SentinelRetention` task (reader account, 03:15) that
+runs `sentinelctl purge --apply` with 30-day normalized events, 7-day raw XML,
+and 90-day alerts/source-health/gaps, keeping at least 1,000 events within a
+10 GiB estimated-payload cap. That is not a database file-size limit: a burst
+can exceed it before the next purge, and purge does not shrink the file; see
+[retention limits](docs/v02-retention-backup.md#limits). Change the day values
+with `-EventDays`, `-RawDays`, `-AlertDays`, `-HealthDays`, and `-GapDays`;
+remove the task with `-NoRetentionTask` (stops and unregisters it) or skip
+registration with `-NoTask`. A sensor is unbounded only when you opt out. Data
+is preserved when uninstalling unless `-RemoveData` is explicit, uninstall
+removes both tasks, and
 teardown restores the saved channel ACL and user-rights policy:
 
 ```powershell

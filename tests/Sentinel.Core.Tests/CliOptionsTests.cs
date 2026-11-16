@@ -69,6 +69,16 @@ public class CliOptionsTests
     }
 
     [Fact]
+    public void Duplicate_option_is_rejected()
+    {
+        var error = Assert.Throws<ArgumentException>(
+            () => CliOptions.Parse(["--apply", "false", "--apply"]));
+
+        Assert.Contains("--apply", error.Message, StringComparison.Ordinal);
+        Assert.Contains("more than once", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Integer_option_rejects_non_numeric_value()
     {
         var options = CliOptions.Parse(["--limit", "many"]);

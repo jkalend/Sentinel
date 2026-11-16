@@ -4,6 +4,29 @@ All notable changes to Sentinel. Versions are `0.x.y`; each release covers the
 whole repository (agent, control CLI, rules, and schemas). Release artifacts and
 their verification limits are described in [docs/release.md](docs/release.md).
 
+## [Unreleased]
+
+### Fixed
+
+- `-NoRetentionTask` now stops and unregisters an existing `SentinelRetention`
+  task instead of leaving the previous policy active while reporting it absent.
+- Retention runs as the least-privileged reader account instead of SYSTEM, so a
+  reader-writable database or log path no longer creates a SYSTEM write boundary.
+- `build-release.ps1` rejects a `-Version` that differs from
+  `Directory.Build.props`, refuses to recursively delete a non-release directory
+  or a path containing the checkout, and normalizes a trailing output separator.
+- CLI option parsing rejects duplicate options; `--apply false --apply` can no
+  longer turn a flag violation into an applied purge.
+- Assembly and file versions derive from the single `Version` property, so a
+  later tag cannot ship binaries that report the previous release.
+- `global.json` uses `rollForward: disable`, making the exact-version CI check
+  meaningful.
+
+### Changed
+
+- README qualifies the 10 GiB retention value as an estimated-payload cap, not a
+  database file-size limit.
+
 ## [0.4.3] - 2026-11-15
 
 Release-engineering and operational-hardening slice; no new collection capability.
