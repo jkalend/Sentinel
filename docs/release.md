@@ -22,7 +22,7 @@ Prerequisites: the exact .NET SDK pinned by `global.json` (10.0.115) on Windows.
 `dotnet --version` differs.
 
 ```powershell
-./scripts/build-release.ps1 -Version 0.5.1
+./scripts/build-release.ps1 -Version 0.6.0
 ```
 
 The script publishes both executables self-contained for `win-x64`, prunes

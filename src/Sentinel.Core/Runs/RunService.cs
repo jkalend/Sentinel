@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Sentinel.Core.Model;
 using Sentinel.Core.Rules;
 using Sentinel.Core.Store;
@@ -25,8 +26,15 @@ public static class RunService
         string schemaRoot,
         string outputDirectory,
         bool includePayload = false,
-        IReadOnlyCollection<string>? selectedSourceKeys = null)
+        IReadOnlyCollection<string>? selectedSourceKeys = null,
+        IReadOnlyCollection<string>? redactedFields = null)
     {
+        var redactions = NormalizeRedactions(redactedFields);
+        if (redactions.Count > 0 && !includePayload)
+        {
+            throw new ArgumentException("redaction requires payload export.");
+        }
+
         var output = Path.GetFullPath(outputDirectory);
         if (Directory.Exists(output) && Directory.EnumerateFileSystemEntries(output).Any())
         {
@@ -113,7 +121,7 @@ public static class RunService
             {
                 foreach (var pin in eventPins.Where(pin => selection is null || selection.Contains(pin.SourceKey)))
                 {
-                    var payload = Payload(payloadByKey[pin.SourceKey]);
+                    var payload = Payload(payloadByKey[pin.SourceKey], redactions);
                     writer.WriteLine(CanonicalJson.Serialize(payload, ManifestOptions));
                 }
             }
@@ -129,7 +137,7 @@ public static class RunService
                     return pin with
                     {
                         PayloadIncluded = true,
-                        PayloadSha256 = CanonicalJson.HashText(CanonicalJson.Serialize(Payload(payloadByKey[pin.SourceKey]), ManifestOptions))
+                        PayloadSha256 = CanonicalJson.HashText(CanonicalJson.Serialize(Payload(payloadByKey[pin.SourceKey], redactions), ManifestOptions))
                     };
                 })
                 .ToList();
@@ -141,7 +149,8 @@ public static class RunService
             includePayload,
             payloadFile,
             payloadHash,
-            selection?.Order(StringComparer.Ordinal).ToList());
+            selection?.Order(StringComparer.Ordinal).ToList(),
+            redactions.Count == 0 ? null : redactions);
         var manifest = new RunManifest(
             Format,
             Guid.NewGuid().ToString("D"),
@@ -305,7 +314,8 @@ public static class RunService
                     continue;
                 }
 
-                if (payload.Payload.RawPurgedAt is not null)
+                if (payload.Payload.RawPurgedAt is not null
+                    || payload.Payload.RedactedFields is { Count: > 0 })
                 {
                     redacted++;
                 }
@@ -360,7 +370,7 @@ public static class RunService
             .ToList(),
         manifest.Export);
 
-    public static RunPayload CreatePayload(LocalEvent value) => Payload(value);
+    public static RunPayload CreatePayload(LocalEvent value) => Payload(value, []);
 
     private static RunIdentity BuildIdentity(RuleSet rules, string schemaRoot)
     {
@@ -436,17 +446,99 @@ public static class RunService
         false,
         null);
 
-    private static RunPayload Payload(LocalEvent value) => new(
-        value.SourceKey,
-        value.SensorSequence,
-        value.Kind.ToString(),
-        Timestamp(value.Time),
-        value.LoggedTime is null ? null : Timestamp(value.LoggedTime.Value),
-        value.ClockStatus,
-        value.RawPurgedAt is null ? value.RawXml : null,
-        value.OcsfJson is null ? null : NormalizeOcsf(value.OcsfJson),
-        CanonicalJson.Serialize(value.Unmapped),
-        value.RawPurgedAt is null ? null : Timestamp(value.RawPurgedAt.Value));
+    private static RunPayload Payload(LocalEvent value, IReadOnlyCollection<string> redactions)
+    {
+        var redacted = redactions.Count > 0;
+        return new RunPayload(
+            value.SourceKey,
+            value.SensorSequence,
+            value.Kind.ToString(),
+            Timestamp(value.Time),
+            value.LoggedTime is null ? null : Timestamp(value.LoggedTime.Value),
+            value.ClockStatus,
+            redacted ? null : value.RawPurgedAt is null ? value.RawXml : null,
+            value.OcsfJson is null ? null : RedactOcsf(NormalizeOcsf(value.OcsfJson), redactions),
+            CanonicalJson.Serialize(value.Unmapped),
+            value.RawPurgedAt is null ? null : Timestamp(value.RawPurgedAt.Value),
+            redacted ? redactions.OrderBy(item => item, StringComparer.Ordinal).ToList() : null);
+    }
+
+    private static readonly HashSet<string> SupportedRedactions = new(StringComparer.Ordinal)
+    {
+        "raw_xml",
+        "process.cmd_line",
+        "process.path",
+        "user.name"
+    };
+
+    private static IReadOnlyList<string> NormalizeRedactions(IReadOnlyCollection<string>? fields)
+    {
+        if (fields is null || fields.Count == 0)
+        {
+            return [];
+        }
+
+        var result = fields
+            .Select(value => value.Trim())
+            .Where(value => value.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToList();
+        var unknown = result.Where(value => !SupportedRedactions.Contains(value)).ToList();
+        if (unknown.Count > 0)
+        {
+            throw new ArgumentException(
+                $"unsupported redaction field(s): {string.Join(", ", unknown)}; "
+                + $"supported: {string.Join(", ", SupportedRedactions.Order())}.");
+        }
+
+        return result;
+    }
+
+    private static string RedactOcsf(string json, IReadOnlyCollection<string> redactions)
+    {
+        if (redactions.Count == 0)
+        {
+            return json;
+        }
+
+        var root = JsonNode.Parse(json) as JsonObject
+            ?? throw new InvalidDataException("OCSF JSON is not an object.");
+        var process = root["process"] as JsonObject;
+        if (redactions.Contains("process.cmd_line") && process is not null)
+        {
+            process["cmd_line"] = "[redacted]";
+        }
+
+        if (redactions.Contains("process.path") && process?["file"] is JsonObject file)
+        {
+            file["path"] = "[redacted]";
+        }
+
+        if (redactions.Contains("user.name"))
+        {
+            RedactUser(root["user"] as JsonObject);
+            RedactUser(process?["user"] as JsonObject);
+            if (root["actor"] is JsonObject actor)
+            {
+                RedactUser(actor["user"] as JsonObject);
+                if (actor["process"] is JsonObject actorProcess)
+                {
+                    RedactUser(actorProcess["user"] as JsonObject);
+                }
+            }
+        }
+
+        return CanonicalJson.Serialize(root);
+    }
+
+    private static void RedactUser(JsonObject? user)
+    {
+        if (user is not null)
+        {
+            user["name"] = "[redacted]";
+        }
+    }
 
     private static string NormalizeOcsf(string json)
     {

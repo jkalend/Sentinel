@@ -1,0 +1,8 @@
+{
+  "channel": "Microsoft-Windows-Sysmon/Operational",
+  "incarnation_id": "d2e3f4a5-6b7c-4d8e-9f10-444444444444",
+  "config_generation": 1,
+  "sensor_id": "3f8d2b5f-7c2e-4b1a-8e3f-555555555555",
+  "host_id": "9b5e3d7f-2a4c-4e6b-9d8c-666666666666",
+  "network_ground_truth": []
+}

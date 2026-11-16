@@ -102,6 +102,68 @@ public class RunTests
     }
 
     [Fact]
+    public void Redacted_payload_omits_raw_and_marks_fields()
+    {
+        var database = TestSupport.NewDatabasePath();
+        var output = NewDirectory();
+        try
+        {
+            using var store = CreateStore(database);
+            var manifest = RunService.Create(
+                store,
+                TestSupport.Rules(),
+                TestSupport.SchemaPath,
+                output,
+                includePayload: true,
+                redactedFields: ["raw_xml", "process.cmd_line", "user.name"]);
+
+            Assert.Equal(
+                new[] { "process.cmd_line", "raw_xml", "user.name" },
+                manifest.Export.RedactedFields);
+            var lines = File.ReadAllLines(Path.Combine(output, "payload.jsonl"));
+            Assert.Equal(10, lines.Length);
+            foreach (var line in lines)
+            {
+                var payload = System.Text.Json.Nodes.JsonNode.Parse(line)!.AsObject();
+                Assert.Null(payload["raw_xml"]);
+                Assert.Equal(
+                    new[] { "process.cmd_line", "raw_xml", "user.name" },
+                    payload["redacted_fields"]!.AsArray().Select(value => value!.GetValue<string>()).ToArray());
+                var ocsf = payload["ocsf_json"]?.GetValue<string>();
+                if (ocsf is not null)
+                {
+                    var root = System.Text.Json.Nodes.JsonNode.Parse(ocsf)!.AsObject();
+                    if (root["process"] is System.Text.Json.Nodes.JsonObject process
+                        && process["cmd_line"] is not null)
+                    {
+                        Assert.Equal("[redacted]", process["cmd_line"]!.GetValue<string>());
+                    }
+
+                    if (root["user"] is System.Text.Json.Nodes.JsonObject user)
+                    {
+                        Assert.Equal("[redacted]", user["name"]!.GetValue<string>());
+                    }
+
+                    if (root["process"] is System.Text.Json.Nodes.JsonObject processObject
+                        && processObject["user"] is System.Text.Json.Nodes.JsonObject processUserObject)
+                    {
+                        Assert.Equal("[redacted]", processUserObject["name"]!.GetValue<string>());
+                    }
+                }
+            }
+
+            var verification = RunService.Verify(manifest, output);
+            Assert.True(verification.Ok);
+            Assert.Equal(10, verification.Redacted);
+        }
+        finally
+        {
+            TestSupport.DeleteDatabase(database);
+            DeleteDirectory(output);
+        }
+    }
+
+    [Fact]
     public void Payload_export_can_select_one_source_key()
     {
         var database = TestSupport.NewDatabasePath();

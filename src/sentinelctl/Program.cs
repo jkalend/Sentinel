@@ -52,9 +52,10 @@ var commandOptions = new Dictionary<string, IReadOnlyDictionary<string, bool>>(S
     ["purges"] = Spec(("db", true), ("limit", true)),
     ["run"] = Spec(
         ("db", true), ("output", true), ("rules", true), ("pack", true), ("schema", true),
-        ("source-keys", true), ("include-payload", false)),
+        ("source-keys", true), ("redact", true), ("include-payload", false)),
     ["verify-run"] = Spec(("manifest", true), ("db", true)),
-    ["backup"] = Spec(("db", true), ("output", true)),
+    ["backup"] = Spec(("db", true), ("output", true), ("signing-key", true)),
+    ["backup-keygen"] = Spec(("output", true)),
     ["restore"] = Spec(("backup", true), ("db", true)),
     ["verify"] = Spec(("db", true), ("schema", true))
 };
@@ -164,6 +165,9 @@ try
             break;
         case "backup":
             Backup(options);
+            break;
+        case "backup-keygen":
+            BackupKeygen(options);
             break;
         case "restore":
             Restore(options);
@@ -815,7 +819,10 @@ static void Backup(Dictionary<string, string?> options)
     var databasePath = Get(options, "db") ?? "data/sentinel.db";
     var output = Get(options, "output")
         ?? throw new ArgumentException("--output is required.");
-    var report = BackupService.Create(databasePath, output);
+    var signingKey = Get(options, "signing-key") is { } signingKeyPath
+        ? File.ReadAllText(signingKeyPath)
+        : null;
+    var report = BackupService.Create(databasePath, output, null, signingKey);
     Console.WriteLine($"backup: {report.BackupPath}");
     Console.WriteLine($"manifest: {report.ManifestPath}");
     Console.WriteLine($"sha256: {report.Manifest.DatabaseSha256}");
@@ -830,6 +837,16 @@ static void Backup(Dictionary<string, string?> options)
             $"record={report.Manifest.BookmarkRecordId} " +
             $"coverage_start={report.Manifest.BookmarkCoverageStart?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}");
     }
+}
+
+static void BackupKeygen(Dictionary<string, string?> options)
+{
+    var output = Get(options, "output")
+        ?? throw new ArgumentException("--output is required.");
+    var publicKey = BackupService.GenerateSigningKey(output);
+    Console.WriteLine($"private_key: {Path.GetFullPath(output)}");
+    Console.WriteLine("public_key:");
+    Console.WriteLine(publicKey);
 }
 
 static void Restore(Dictionary<string, string?> options)
@@ -854,8 +871,12 @@ static void Run(Dictionary<string, string?> options)
     var rules = LoadRules(options, store, "rules");
     var selected = Get(options, "source-keys")?
         .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    var includePayload = options.ContainsKey("include-payload") || selected is { Length: > 0 };
-    var manifest = RunService.Create(store, rules, schema, output, includePayload, selected);
+    var redacted = Get(options, "redact")?
+        .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    var includePayload = options.ContainsKey("include-payload")
+        || selected is { Length: > 0 }
+        || redacted is { Length: > 0 };
+    var manifest = RunService.Create(store, rules, schema, output, includePayload, selected, redacted);
     Console.WriteLine($"run_id: {manifest.RunId}");
     Console.WriteLine($"manifest: {Path.Combine(Path.GetFullPath(output), "manifest.json")}");
     Console.WriteLine($"content_sha256: {manifest.ContentSha256}");
@@ -1055,10 +1076,12 @@ static void Usage()
     Console.WriteLine("            [--health-days 90] [--gap-days 90] [--keep-events 1000] [--max-bytes 10737418240]");
     Console.WriteLine("            [--now <iso>] [--apply] [--compact]");
     Console.WriteLine("  purges    [--db <path>] [--limit <n>]");
-    Console.WriteLine("  backup    --db <path> --output <path>");
+    Console.WriteLine("  backup    --db <path> --output <path> [--signing-key <pem>]");
+    Console.WriteLine("  backup-keygen --output <pem>");
     Console.WriteLine("  restore   --backup <path> [--db <path>]");
     Console.WriteLine("  run       --db <path> --output <dir> [--rules <dir>|--pack <ref>] [--schema <dir>]");
     Console.WriteLine("            [--include-payload] [--source-keys <key;key>]");
+    Console.WriteLine("            [--redact raw_xml;process.cmd_line;process.path;user.name]");
     Console.WriteLine("  verify-run --manifest <path> [--db <path>]");
     Console.WriteLine("  verify    [--db <path>] [--schema <dir>]");
 }

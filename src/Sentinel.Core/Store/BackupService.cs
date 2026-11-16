@@ -1,7 +1,9 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Sentinel.Core.Model;
+using Sentinel.Core.Runs;
 using Sentinel.Core.Sysmon;
 
 namespace Sentinel.Core.Store;
@@ -10,7 +12,11 @@ public static class BackupService
 {
     private const string Format = "sentinel.backup/v1";
 
-    public static BackupReport Create(string databasePath, string outputPath, DateTimeOffset? now = null)
+    public static BackupReport Create(
+        string databasePath,
+        string outputPath,
+        DateTimeOffset? now = null,
+        string? signingPrivateKeyPem = null)
     {
         var sourcePath = Path.GetFullPath(databasePath);
         var backupPath = Path.GetFullPath(outputPath);
@@ -48,6 +54,20 @@ public static class BackupService
                 DatabaseSha256 = HashFile(backupPath),
                 DatabaseBytes = new FileInfo(backupPath).Length
             };
+            if (!string.IsNullOrWhiteSpace(signingPrivateKeyPem))
+            {
+                using var key = ECDsa.Create();
+                key.ImportFromPem(signingPrivateKeyPem);
+                var publicKey = key.ExportSubjectPublicKeyInfoPem();
+                finalManifest = finalManifest with { SigningPublicKeyPem = publicKey };
+                var payload = Encoding.UTF8.GetBytes(CanonicalJson.Serialize(finalManifest));
+                var signature = key.SignData(
+                    payload,
+                    HashAlgorithmName.SHA256,
+                    DSASignatureFormat.Rfc3279DerSequence);
+                finalManifest = finalManifest with { Signature = Convert.ToBase64String(signature) };
+            }
+
             var json = JsonSerializer.Serialize(finalManifest, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(partialManifest, json);
             File.Move(partialManifest, manifestPath);
@@ -114,10 +134,48 @@ public static class BackupService
             lastError);
     }
 
+    public static string GenerateSigningKey(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(fullPath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        File.WriteAllText(fullPath, key.ExportPkcs8PrivateKeyPem(), new UTF8Encoding(false));
+        return key.ExportSubjectPublicKeyInfoPem();
+    }
+
+    /// <summary>
+    /// Repairs the target/previous pair left by a process kill between the two
+    /// renames in <see cref="Replace"/>.
+    /// </summary>
+    public static void RecoverInterruptedRestore(string databasePath)
+    {
+        var target = Path.GetFullPath(databasePath);
+        var previous = target + ".pre-restore";
+        if (!File.Exists(previous))
+        {
+            return;
+        }
+
+        if (File.Exists(target))
+        {
+            File.Delete(previous);
+        }
+        else
+        {
+            File.Move(previous, target);
+        }
+    }
+
     public static RestoreReport Restore(string backupPath, string databasePath)
     {
         var sourceBackup = Path.GetFullPath(backupPath);
         var target = Path.GetFullPath(databasePath);
+        RecoverInterruptedRestore(target);
         var manifestPath = sourceBackup + ".manifest.json";
         if (!File.Exists(sourceBackup))
         {
@@ -141,6 +199,7 @@ public static class BackupService
             throw new InvalidDataException($"unsupported backup format: {manifest.Format}");
         }
 
+        ValidateSignature(manifest);
         if (!string.Equals(HashFile(sourceBackup), manifest.DatabaseSha256, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException("backup database hash does not match the manifest.");
@@ -194,6 +253,42 @@ public static class BackupService
             bookmark?.CoverageStartRecordId,
             bookmark?.SensorSequence,
             now);
+    }
+
+    private static void ValidateSignature(BackupManifest manifest)
+    {
+        if (manifest.SigningPublicKeyPem is null && manifest.Signature is null)
+        {
+            return;
+        }
+
+        if (manifest.SigningPublicKeyPem is null || manifest.Signature is null)
+        {
+            throw new InvalidDataException("backup manifest has an incomplete signature.");
+        }
+
+        byte[] signature;
+        try
+        {
+            signature = Convert.FromBase64String(manifest.Signature);
+        }
+        catch (FormatException ex)
+        {
+            throw new InvalidDataException("backup manifest signature is not valid base64.", ex);
+        }
+
+        using var key = ECDsa.Create();
+        key.ImportFromPem(manifest.SigningPublicKeyPem);
+        var unsigned = manifest with { Signature = null };
+        var payload = Encoding.UTF8.GetBytes(CanonicalJson.Serialize(unsigned));
+        if (!key.VerifyData(
+                payload,
+                signature,
+                HashAlgorithmName.SHA256,
+                DSASignatureFormat.Rfc3279DerSequence))
+        {
+            throw new InvalidDataException("backup manifest signature does not match.");
+        }
     }
 
     private static void ValidateDatabase(string path, BackupManifest manifest)
