@@ -18,7 +18,8 @@ retention compaction. No remote control plane.
   pins the rule pack, retention policy, and allowed collectors; `purge`, `push`,
   and rule loading enforce those fields.
 - `sensor_incarnations` with rotation/revocation; the agent refuses a revoked
-  incarnation. The installer mints or reuses `data/identity.json` and passes
+  incarnation. The installer mints or reuses a protected install-root
+  `identity.json` and passes
   explicit sensor/host ids to the task.
 - `purge --apply --compact` for SQLite `VACUUM` after an audited purge.
 

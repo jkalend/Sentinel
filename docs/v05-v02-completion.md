@@ -93,10 +93,10 @@ autonomous update exists.
 ## Identity lifecycle
 
 `sensor_incarnations` records every incarnation with sensor/host, creation,
-optional end, revocation, and reason. The installer mints or reuses
-`data/identity.json` and passes `--sensor-id`/`--host-id` to the agent; explicit
-`-SensorId`/`-HostId` override it. Reinstalling without `-RemoveData` keeps the
-identity.
+optional end, revocation, and reason. The installer mints or reuses a protected
+`identity.json` in the install root and passes `--sensor-id`/`--host-id` to the
+agent; explicit `-SensorId`/`-HostId` override it. Reinstalling without
+`-RemoveInstall` keeps the identity.
 
 ```powershell
 sentinelctl identity-list   --db data/sentinel.db

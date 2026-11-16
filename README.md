@@ -142,9 +142,9 @@ can exceed it before the next purge, and purge does not shrink the file; see
 [retention limits](docs/v02-retention-backup.md#limits). Change the day values
 with `-EventDays`, `-RawDays`, `-AlertDays`, `-HealthDays`, and `-GapDays`;
 remove the task with `-NoRetentionTask` (stops and unregisters it) or skip
-registration with `-NoTask`. The installer mints `data/identity.json` (or reuses
-it on reinstall) and passes the sensor/host ids to the agent; `-SensorId` and
-`-HostId` override it. A sensor is unbounded only when you opt out. Data is
+registration with `-NoTask`. The installer mints a protected `identity.json` in
+the install root (or reuses it on reinstall) and passes the sensor/host ids to
+the agent; `-SensorId` and `-HostId` override it. A sensor is unbounded only when you opt out. Data is
 preserved when uninstalling unless `-RemoveData` is explicit, uninstall removes
 both tasks, and
 teardown restores the saved channel ACL and user-rights policy:

@@ -163,7 +163,7 @@ $capture = Join-Path $install 'capture'
 New-Item -ItemType Directory -Path $data -Force | Out-Null
 New-Item -ItemType Directory -Path $capture -Force | Out-Null
 
-$identityPath = Join-Path $data 'identity.json'
+$identityPath = Join-Path $install 'identity.json'
 $existingIdentity = $null
 if (Test-Path -LiteralPath $identityPath) {
     $existingIdentity = Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
