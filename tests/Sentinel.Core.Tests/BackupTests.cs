@@ -96,6 +96,80 @@ public class BackupTests
         }
     }
 
+    [Fact]
+    public void Signed_manifest_verifies_and_tampering_fails()
+    {
+        var source = TestSupport.NewDatabasePath();
+        var backup = TestSupport.NewDatabasePath();
+        var restored = TestSupport.NewDatabasePath();
+        var keyPath = TestSupport.NewDatabasePath() + ".pem";
+        try
+        {
+            using (var store = new SqliteEventStore(source))
+            {
+                store.Initialize();
+                var fixture = TestSupport.Fixture();
+                var (sensorId, hostId) = store.EnsureIdentity(fixture.SensorId, fixture.HostId);
+                new IngestionService(store, sensorId, hostId).Ingest(
+                    fixture.Records,
+                    TestSupport.Rules(),
+                    fixture.Channel,
+                    fixture.IncarnationId,
+                    fixture.ConfigGeneration,
+                    fixture.GroundTruth);
+            }
+
+            BackupService.GenerateSigningKey(keyPath);
+            var report = BackupService.Create(source, backup, null, File.ReadAllText(keyPath));
+            Assert.NotNull(report.Manifest.Signature);
+            Assert.NotNull(report.Manifest.SigningPublicKeyPem);
+            BackupService.Restore(backup, restored);
+
+            var manifestPath = backup + ".manifest.json";
+            var manifest = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(manifestPath))!;
+            manifest["CreatedAt"] = "2027-01-01T00:00:00.0000000+00:00";
+            File.WriteAllText(manifestPath, manifest.ToJsonString());
+            var error = Assert.Throws<InvalidDataException>(() => BackupService.Restore(backup, restored));
+            Assert.Contains("signature", error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            TestSupport.DeleteDatabase(source);
+            TestSupport.DeleteDatabase(backup);
+            TestSupport.DeleteDatabase(restored);
+            DeleteIfExists(backup + ".manifest.json");
+            DeleteIfExists(keyPath);
+        }
+    }
+
+    [Fact]
+    public void Interrupted_restore_recovery_keeps_the_previous_database()
+    {
+        var target = TestSupport.NewDatabasePath();
+        var previous = target + ".pre-restore";
+        try
+        {
+            File.WriteAllText(target, "previous");
+            File.Move(target, previous);
+
+            BackupService.RecoverInterruptedRestore(target);
+
+            Assert.True(File.Exists(target));
+            Assert.False(File.Exists(previous));
+            Assert.Equal("previous", File.ReadAllText(target));
+
+            File.WriteAllText(previous, "leftover");
+            BackupService.RecoverInterruptedRestore(target);
+            Assert.False(File.Exists(previous));
+            Assert.Equal("previous", File.ReadAllText(target));
+        }
+        finally
+        {
+            TestSupport.DeleteDatabase(target);
+            DeleteIfExists(previous);
+        }
+    }
+
     private static string Hash(string path)
     {
         using var stream = File.OpenRead(path);

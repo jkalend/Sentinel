@@ -29,6 +29,7 @@ public static class OcsfMapper
     public const int ProcessActivityClassUid = 1007;
     public const int NetworkActivityClassUid = 4001;
     public const int ProcessLaunchActivityId = 1;
+    public const int ProcessTerminateActivityId = 2;
     public const int NetworkOpenActivityId = 1;
     public const int NetworkUnknownActivityId = 0;
 
@@ -62,6 +63,7 @@ public static class OcsfMapper
         {
             1 => MapProcess(record, context),
             3 => MapNetwork(record, context, outcome),
+            5 => MapProcessTerminate(record, context),
             _ => MapSourceHealth(record)
         };
     }
@@ -163,6 +165,78 @@ public static class OcsfMapper
             ocsf.ToJsonString(),
             ProcessActivityClassUid,
             ProcessLaunchActivityId,
+            unmapped,
+            process,
+            null,
+            record.Computer,
+            user);
+    }
+
+    private static MappedRecord MapProcessTerminate(SysmonRecord record, MappingContext context)
+    {
+        var unmapped = new List<UnmappedField>();
+        var eventTime = ResolveEventTime(record, unmapped);
+        var image = record.Get("Image");
+        var user = record.Get("User");
+        var processGuid = record.Get("ProcessGuid");
+        var processId = record.GetInt("ProcessId");
+        var processName = image is null ? null : WindowsPath.FileName(image);
+
+        var target = BuildProcess(
+            processGuid,
+            processId,
+            image,
+            null,
+            user,
+            null,
+            null,
+            record.Get("Hashes"),
+            record.Get("FileVersion"),
+            record.Get("Description"),
+            record.Get("Product"),
+            record.Get("Company"),
+            record.Get("OriginalFileName"),
+            unmapped);
+
+        var ocsf = new JsonObject
+        {
+            ["activity_id"] = ProcessTerminateActivityId,
+            ["activity_name"] = "Terminate",
+            ["category_uid"] = 1,
+            ["category_name"] = "System Activity",
+            ["class_uid"] = ProcessActivityClassUid,
+            ["class_name"] = "Process Activity",
+            ["type_uid"] = ProcessActivityClassUid * 100 + ProcessTerminateActivityId,
+            ["type_name"] = "Process Activity: Terminate",
+            ["severity_id"] = 1,
+            ["severity"] = "Informational",
+            ["time"] = EpochMillis(eventTime),
+            ["metadata"] = Metadata(record, context),
+            ["device"] = Device(record.Computer),
+            ["actor"] = new JsonObject { ["process"] = target.DeepClone() },
+            ["process"] = target
+        };
+
+        AddUnmapped(unmapped, record, "RuleName", "Detection metadata; not an OCSF event field.");
+
+        var process = new ProcessContext(
+            processGuid,
+            processId,
+            processName,
+            null,
+            image,
+            null,
+            null,
+            null,
+            null,
+            user);
+
+        return new MappedRecord(
+            eventTime,
+            RecordKind.Data,
+            ocsf.ToJsonString(),
+            ProcessActivityClassUid,
+            ProcessTerminateActivityId,
             unmapped,
             process,
             null,

@@ -138,20 +138,23 @@ showed successful backup, purge, append continuation, and restore.
 
 ## Limits
 
-- The byte cap is a payload estimate and does not run `VACUUM`; use an operator
-  maintenance window when physical file size matters.
+- The byte cap is a payload estimate. `purge --compact` runs `VACUUM` when file
+  size matters; it does not change retention eligibility.
 - Purge is age/size based, not segment-based; the newest `--keep-events` rows are
   protected, but older rows can be deleted by size before their age cutoff.
 - The active bookmark is always preserved. Old bookmark rows are not a separate
   table yet, so bookmark-age retention is not implemented.
-- Backup validation checks integrity and exact schema versions, but the local
-  manifest is not signed. `restore` requires an exact contract match and does
-  not migrate older databases.
+- Backup validation checks integrity and exact schema versions. Manifests may be
+  signed with `backup --signing-key`; unsigned manifests remain accepted.
+  `restore` requires an exact contract match and does not migrate older
+  databases.
 - Restore is an offline replacement of the target file. It is fail-closed for
-  hash, integrity, schema, and count mismatches, but there is no crash-injection
-  test for a process kill between target rename steps.
+  hash, integrity, schema, and count mismatches. `RecoverInterruptedRestore`
+  repairs a target/`.pre-restore` pair after a kill between renames; a full
+  process-kill harness is still not run.
 - The live VM evidence uses a shortened 800-record collection and a synthetic
-  disposable endpoint; multi-gigabyte size, physical compaction, crash injection
-  between restore renames, and production retention periods remain unverified.
-- Redaction lists are not implemented; command lines remain evidence unless a
-  future explicit redaction pass records its own audit.
+  disposable endpoint; multi-gigabyte size, live compaction, a process-kill
+  restore, and production retention periods remain unverified.
+- Run-export redaction (`run --redact`) omits or masks selected payload fields
+  and records them; stored raw XML and OCSF rows are never rewritten. Store-level
+  redaction remains unimplemented.

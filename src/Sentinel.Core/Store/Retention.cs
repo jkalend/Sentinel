@@ -94,7 +94,9 @@ public sealed record BackupManifest(
     long? BookmarkRecordId,
     long? BookmarkCoverageStart,
     long? BookmarkSensorSequence,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    string? SigningPublicKeyPem = null,
+    string? Signature = null);
 
 public sealed record BackupReport(string BackupPath, string ManifestPath, BackupManifest Manifest);
 

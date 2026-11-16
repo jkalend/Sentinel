@@ -13,6 +13,7 @@ internal static class TestSupport
 
     public static string FixturePath => Path.Combine(Root, "fixtures", "sysmon-v01");
     public static string FleetFixturePath => Path.Combine(Root, "fixtures", "fleet-v01");
+    public static string TerminateFixturePath => Path.Combine(Root, "fixtures", "sysmon-v06-terminate");
     public static string RulesPath => Path.Combine(Root, "rules");
     public static string SchemaPath => Path.Combine(Root, "schemas", "ocsf-1.9.0");
 

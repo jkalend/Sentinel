@@ -126,8 +126,10 @@ Additive only: alert `pack_id`/`pack_sha256` columns; `rule_packs`,
 ## Limits
 
 - Rule packs and config documents are unsigned; local trust only.
-- Redaction lists, signed backup manifests, bookmark-age retention, and
-  crash-injection restore remain unimplemented.
+- Bookmark-age retention is not applicable while one active bookmark per source
+  is stored.
+- Signed backup manifests, run-export redaction, and interrupted-restore
+  recovery arrive in 0.6; see [V0.6](v06-event-evidence.md).
 - No remote config distribution, multi-tenant control plane, or response action.
 - Installer identity/task changes and the VM harness are not live-executed in
   this slice; fixture and parser checks only.
@@ -142,4 +144,5 @@ dotnet test Sentinel.slnx -c Release
 Fixture coverage includes pack hash stability, tamper rejection, activation/
 rollback, alert and run provenance, config apply/rollback/drift, collector
 allowlist, incarnation rotation/revocation, revoked-agent refusal, and compaction
-counts/size. The full suite passes 117 tests in this slice.
+counts/size. The suite passed 117 tests when this slice shipped; the full
+repository suite is now 122 tests.

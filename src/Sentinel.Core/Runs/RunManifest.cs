@@ -86,7 +86,9 @@ public sealed record RunExport(
     bool PayloadIncluded,
     string? PayloadFile,
     string? PayloadSha256,
-    IReadOnlyList<string>? SelectedSourceKeys = null);
+    IReadOnlyList<string>? SelectedSourceKeys = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? RedactedFields = null);
 
 public sealed record RunContent(
     RunIdentity Identity,
@@ -121,7 +123,9 @@ public sealed record RunPayload(
     string? RawXml,
     string? OcsfJson,
     string? UnmappedJson,
-    string? RawPurgedAt);
+    string? RawPurgedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? RedactedFields = null);
 
 public sealed record RunVerification(
     bool ManifestValid,

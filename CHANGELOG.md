@@ -4,6 +4,35 @@ All notable changes to Sentinel. Versions are `0.x.y`; each release covers the
 whole repository (agent, control CLI, rules, and schemas). Release artifacts and
 their verification limits are described in [docs/release.md](docs/release.md).
 
+## [0.6.0] - 2026-11-16
+
+Event coverage and evidence hardening.
+
+### Added
+
+- Sysmon Event ID 5 (process termination) maps to OCSF Process Activity /
+  Terminate, with timeline context and a dedicated fixture.
+- `backup-keygen` and `backup --signing-key` produce ECDSA P-256 signed backup
+  manifests; restore verifies the signature and fails closed.
+- `run --redact raw_xml;process.cmd_line;process.path;user.name` exports
+  redacted payloads, records the field list, omits raw XML, and counts redacted
+  records on verification.
+- `BackupService.RecoverInterruptedRestore` repairs a target/previous pair left
+  by a kill between restore renames.
+
+### Changed
+
+- Run manifests pin `export.redacted_fields`; payloads carry `redacted_fields`.
+- Event-ID 5 records are data events, not source-health markers.
+
+### Limits
+
+- Bookmark-age retention is not applicable while the store keeps one active
+  bookmark per source; no bookmark-history table exists.
+- A second endpoint/network provider and the parser framework are not part of
+  this slice; no parser bypasses OCSF.
+- Live lab, VM harness, and DataSentinel shell work remain outside this release.
+
 ## [0.5.1] - 2026-11-16
 
 ### Fixed

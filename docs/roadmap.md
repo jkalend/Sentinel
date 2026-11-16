@@ -5,14 +5,15 @@ means preview: the local event contract is frozen, operational behavior is not.
 Each minor release is one capability slice with fixtures and explicit limits;
 nothing is promoted from this document by implication.
 
-Current release: **0.5.1** — V0.1–V0.4 lab/fixture slices, release tooling, and
-the core V0.2 completion.
+Current release: **0.6.0** — V0.1–V0.4 lab/fixture slices, release tooling, the
+core V0.2 completion, and the 0.6 event/evidence slice.
 
 ## 0.5 — V0.2 completion
 
-**Implemented in 0.5.1.** Remaining retention details (redaction lists, signed
-backup manifests, bookmark-age retention, crash-injection restore) stay open.
-The core V0.2 design items from [v02-plan.md](v02-plan.md):
+**Implemented in 0.5.0; pack-hash fix in 0.5.1.** Redaction, signed backups,
+and interrupted-restore recovery followed in 0.6.0. Bookmark-age retention is
+not applicable while one active bookmark per source is stored. The core V0.2
+design items from [v02-plan.md](v02-plan.md):
 
 - Rule packs: manifest, content-addressed install, activation, rollback, and
   alert provenance (`pack_id`, pack hash, rule version, engine version). Pinned
@@ -35,6 +36,11 @@ config apply/rollback/drift; rotation/revocation; compaction after purge; no
 silent fallback to a different pack or identity.
 
 ## 0.6 — Provider expansion
+
+**Partially implemented in 0.6.0:** Sysmon Event ID 5 (process termination)
+coverage, signed backup manifests, run-export redaction, and interrupted-restore
+recovery. A second endpoint/network provider and the parser framework remain
+gated.
 
 - One new provider per release, starting with Linux (auditd or eBPF) or Windows
   event IDs beyond 1/3; each needs a provider/build matrix, field mapping,
