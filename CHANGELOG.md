@@ -4,6 +4,31 @@ All notable changes to Sentinel. Versions are `0.x.y`; each release covers the
 whole repository (agent, control CLI, rules, and schemas). Release artifacts and
 their verification limits are described in [docs/release.md](docs/release.md).
 
+## [0.9.1] - 2026-11-16
+
+### Fixed
+
+- Sigma import fails closed on duplicate output names, existing output rules,
+  repeated mapped fields, wildcard/CIDR patterns, and missing/unsupported
+  logsource categories. Process-creation, network-connection, and
+  process-termination rules now carry an `event.id` guard; list
+  `startswith`/`endswith` modifiers map to native operators.
+- Run and backup signing keys are validated before output artifacts are
+  written; empty keys fail explicitly, and malformed verification keys surface
+  as invalid-manifest errors.
+- `--dbs` rejects empty lists and deduplicates normalized paths; `config-show`
+  opens stores read-only, reports missing/uninitialized stores, and does not
+  create files.
+- Legacy fleet-config hashes are recognized as already active when tenant and
+  extended-retention fields are absent.
+- Corrected the Sigma list-support wording in the changelog.
+- Sigma import rejects empty list alternatives and unsupported logsource
+  services, and creates destination files with CreateNew unless --force.
+- Legacy config apply returns the stored legacy digest rather than reporting a
+  different digest for the same generation.
+- Multi-store path deduplication is case-sensitive on case-sensitive
+  filesystems.
+
 ## [0.9.0] - 2026-11-16
 
 Signed evidence handoff (bounded).
@@ -56,8 +81,9 @@ Detection and retention breadth (bounded).
 
 - `sigma-import --input <dir> --output <dir>` converts a single-selection Sigma
   subset (Image, CommandLine, Destination/Source IP/port, Protocol) into native
-  Sentinel rules. Unsupported fields, modifiers, lists, and correlation forms
-  are rejected, not approximated.
+  Sentinel rules. Unsupported fields, modifiers, and correlation forms are
+  rejected, not approximated; supported list `contains`/`startswith`/`endswith`
+  modifiers are imported.
 - `RetentionPolicy.ExtendedRetention` with `RawDays=-1` and
   `purge --extended-retention` keeps raw XML indefinitely by explicit opt-in.
   No encryption at rest is provided.

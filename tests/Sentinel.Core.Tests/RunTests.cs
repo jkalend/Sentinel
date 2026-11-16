@@ -101,6 +101,32 @@ public class RunTests
         }
     }
 
+
+    [Fact]
+    public void Empty_signing_key_fails_before_writing_output()
+    {
+        var database = TestSupport.NewDatabasePath();
+        var output = NewDirectory();
+        try
+        {
+            using var store = CreateStore(database);
+            Assert.Throws<ArgumentException>(
+                () => RunService.Create(
+                    store,
+                    TestSupport.Rules(),
+                    TestSupport.SchemaPath,
+                    output,
+                    includePayload: true,
+                    signingPrivateKeyPem: ""));
+            Assert.False(Directory.Exists(output));
+        }
+        finally
+        {
+            TestSupport.DeleteDatabase(database);
+            DeleteDirectory(output);
+        }
+    }
+
     [Fact]
     public void Signed_run_verifies_and_pins_custody_refs()
     {

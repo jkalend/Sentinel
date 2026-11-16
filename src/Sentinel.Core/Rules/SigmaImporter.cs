@@ -24,7 +24,10 @@ public static class SigmaImporter
         ["Protocol"] = "network.protocol"
     };
 
-    public static IReadOnlyList<SigmaImportResult> ImportDirectory(string inputDirectory, string outputDirectory)
+    public static IReadOnlyList<SigmaImportResult> ImportDirectory(
+        string inputDirectory,
+        string outputDirectory,
+        bool overwrite = false)
     {
         if (!Directory.Exists(inputDirectory))
         {
@@ -42,15 +45,56 @@ public static class SigmaImporter
             throw new UnsupportedRuleException($"No Sigma files found in '{inputDirectory}'.");
         }
 
-        Directory.CreateDirectory(outputDirectory);
-        var results = new List<SigmaImportResult>();
+        if (Directory.Exists(outputDirectory) && !overwrite)
+        {
+            var existing = Directory
+                .EnumerateFiles(outputDirectory, "*.*", SearchOption.TopDirectoryOnly)
+                .Any(path => path.EndsWith(".yml", StringComparison.OrdinalIgnoreCase)
+                    || path.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase));
+            if (existing)
+            {
+                throw new UnsupportedRuleException(
+                    $"output directory '{outputDirectory}' already contains YAML rules; use an empty directory or --force.");
+            }
+        }
+
+        var converted = new List<(string Source, string Yaml, string RuleId, string Output)>();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in files)
         {
             var (yaml, ruleId) = ConvertRule(File.ReadAllText(file), Path.GetFileName(file));
             var name = SafeName(ruleId) + ".yaml";
-            var output = Path.Combine(outputDirectory, name);
-            File.WriteAllText(output, yaml, new UTF8Encoding(false));
-            results.Add(new SigmaImportResult(file, output, ruleId));
+            if (!names.Add(name))
+            {
+                throw new UnsupportedRuleException(
+                    $"Sigma inputs produce the same output file '{name}'; refine the rule ids.");
+            }
+
+            converted.Add((file, yaml, ruleId, Path.Combine(outputDirectory, name)));
+        }
+
+        Directory.CreateDirectory(outputDirectory);
+        var results = new List<SigmaImportResult>();
+        foreach (var item in converted)
+        {
+            try
+            {
+                using var stream = new FileStream(
+                    item.Output,
+                    overwrite ? FileMode.Create : FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None);
+                using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+                writer.Write(item.Yaml);
+            }
+            catch (IOException error) when (!overwrite)
+            {
+                throw new UnsupportedRuleException(
+                    $"output file '{item.Output}' already exists; use --force to overwrite.",
+                    error);
+            }
+
+            results.Add(new SigmaImportResult(item.Source, item.Output, item.RuleId));
         }
 
         return results;
@@ -111,8 +155,43 @@ public static class SigmaImporter
             }
 
             var modifier = parts.Length == 2 ? parts[1].ToLowerInvariant() : null;
-            nativeSelection[mapped] = ConvertValue(sourceName, mapped, modifier, value);
+            if (!nativeSelection.TryAdd(mapped, ConvertValue(sourceName, mapped, modifier, value)))
+            {
+                throw new UnsupportedRuleException(
+                    $"Sigma rule '{sourceName}' maps more than one condition to '{mapped}'.");
+            }
         }
+
+        if (!root.TryGetValue("logsource", out var logsourceValue)
+            || logsourceValue is not Dictionary<object, object> logsource)
+        {
+            throw new UnsupportedRuleException($"Sigma rule '{sourceName}' has no logsource map.");
+        }
+
+        var product = OptionalString(logsource, "product");
+        if (product is not null && !string.Equals(product, "windows", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new UnsupportedRuleException(
+                $"Sigma rule '{sourceName}' targets unsupported product '{product}'.");
+        }
+
+        var service = OptionalString(logsource, "service");
+        if (!string.IsNullOrWhiteSpace(service))
+        {
+            throw new UnsupportedRuleException(
+                $"Sigma rule '{sourceName}' uses unsupported logsource service '{service}'.");
+        }
+
+        var category = RequiredString(logsource, "category", sourceName).ToLowerInvariant();
+        var eventId = category switch
+        {
+            "process_creation" => "1",
+            "network_connection" => "3",
+            "process_termination" => "5",
+            _ => throw new UnsupportedRuleException(
+                $"Sigma rule '{sourceName}' uses unsupported logsource category '{category}'.")
+        };
+        nativeSelection["event.id"] = new Dictionary<object, object> { ["equals"] = eventId };
 
         var sigmaId = OptionalString(root, "id") ?? StableId(title, nativeSelection);
         var ruleId = sigmaId.StartsWith("sigma.", StringComparison.Ordinal) ? sigmaId : "sigma." + sigmaId;
@@ -126,6 +205,7 @@ public static class SigmaImporter
             ["author"] = OptionalString(root, "author") ?? "sigma-import",
             ["license"] = OptionalString(root, "license") ?? string.Empty,
             ["sigma_id"] = sigmaId,
+            ["logsource"] = logsource,
             ["detection"] = new Dictionary<object, object>
             {
                 ["selection"] = nativeSelection,
@@ -147,7 +227,7 @@ public static class SigmaImporter
         {
             return new Dictionary<object, object>
             {
-                [Operator(modifier, sourceName)] = scalar
+                [Operator(modifier, sourceName)] = Literal(sourceName, field, scalar)
             };
         }
 
@@ -157,17 +237,20 @@ public static class SigmaImporter
                 .Select(item => Convert.ToString(item, System.Globalization.CultureInfo.InvariantCulture))
                 .Where(item => item is not null)
                 .Cast<string>()
+                .Select(item => Literal(sourceName, field, item))
                 .ToList();
-            if (values.Count == 0)
+            if (values.Count == 0 || values.Any(string.IsNullOrEmpty))
             {
                 throw new UnsupportedRuleException(
-                    $"Sigma rule '{sourceName}' field '{field}' has an empty value list.");
+                    $"Sigma rule '{sourceName}' field '{field}' has an empty value list or alternative.");
             }
 
             return modifier switch
             {
                 null => new Dictionary<object, object> { ["in"] = values },
                 "contains" => new Dictionary<object, object> { ["contains_any"] = values },
+                "startswith" => new Dictionary<object, object> { ["starts_with"] = values },
+                "endswith" => new Dictionary<object, object> { ["ends_with"] = values },
                 _ => throw new UnsupportedRuleException(
                     $"Sigma rule '{sourceName}' uses unsupported modifier '{modifier}' on a value list.")
             };
@@ -175,6 +258,23 @@ public static class SigmaImporter
 
         throw new UnsupportedRuleException(
             $"Sigma rule '{sourceName}' field '{field}' has an unsupported value type.");
+    }
+
+    private static string Literal(string sourceName, string field, string value)
+    {
+        if (value.Contains('*') || value.Contains('?'))
+        {
+            throw new UnsupportedRuleException(
+                $"Sigma rule '{sourceName}' uses an unsupported wildcard pattern for '{field}'.");
+        }
+
+        if (field.EndsWith(".ip", StringComparison.Ordinal) && value.Contains('/'))
+        {
+            throw new UnsupportedRuleException(
+                $"Sigma rule '{sourceName}' uses an unsupported CIDR pattern for '{field}'.");
+        }
+
+        return value;
     }
 
     private static string Operator(string? modifier, string sourceName) => modifier switch

@@ -18,30 +18,43 @@ public sealed record FleetConfig(
 {
     public const string CurrentFormat = "sentinel.fleet-config/v1";
 
-    public string ComputeSha256() =>
-        CanonicalJson.Hash(new
+    public string ComputeSha256() => ComputeHash(includeNewFields: true);
+
+    /// <summary>Digest emitted before tenant/extended-retention fields existed.</summary>
+    public string ComputeLegacySha256() => ComputeHash(includeNewFields: false);
+
+    private string ComputeHash(bool includeNewFields)
+    {
+        var retention = new Dictionary<string, object?>
         {
-            format = Format,
-            config_id = ConfigId,
-            sensor_id = SensorId,
-            host_id = HostId,
-            tenant_id = TenantId,
-            rule_pack_sha256 = RulePackSha256,
-            retention = new
-            {
-                event_days = Retention.EventDays,
-                raw_days = Retention.RawDays,
-                alert_days = Retention.AlertDays,
-                source_health_days = Retention.SourceHealthDays,
-                gap_days = Retention.GapDays,
-                keep_events = Retention.KeepEvents,
-                max_bytes = Retention.MaxBytes,
-                extended_retention = Retention.ExtendedRetention
-            },
-            allowed_collectors = AllowedCollectors
-                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            ["event_days"] = Retention.EventDays,
+            ["raw_days"] = Retention.RawDays,
+            ["alert_days"] = Retention.AlertDays,
+            ["source_health_days"] = Retention.SourceHealthDays,
+            ["gap_days"] = Retention.GapDays,
+            ["keep_events"] = Retention.KeepEvents,
+            ["max_bytes"] = Retention.MaxBytes
+        };
+        var value = new Dictionary<string, object?>
+        {
+            ["format"] = Format,
+            ["config_id"] = ConfigId,
+            ["sensor_id"] = SensorId,
+            ["host_id"] = HostId,
+            ["rule_pack_sha256"] = RulePackSha256,
+            ["retention"] = retention,
+            ["allowed_collectors"] = AllowedCollectors
+                .OrderBy(item => item, StringComparer.OrdinalIgnoreCase)
                 .ToList()
-        });
+        };
+        if (includeNewFields)
+        {
+            value["tenant_id"] = TenantId;
+            retention["extended_retention"] = Retention.ExtendedRetention;
+        }
+
+        return CanonicalJson.Hash(value);
+    }
 
     public FleetConfig Validate()
     {
@@ -158,10 +171,20 @@ public static class FleetConfigService
         }
 
         var sha = config.ComputeSha256();
+        var legacySha = config.TenantId is null && !config.Retention.ExtendedRetention
+            ? config.ComputeLegacySha256()
+            : null;
         var active = store.GetActiveConfig();
-        if (active is not null && string.Equals(active.ConfigSha256, sha, StringComparison.OrdinalIgnoreCase))
+        if (active is not null
+            && string.Equals(active.ConfigSha256, sha, StringComparison.OrdinalIgnoreCase))
         {
             return new ConfigApplyReport(active.Generation, sha, config, AlreadyActive: true);
+        }
+
+        if (active is not null
+            && string.Equals(active.ConfigSha256, legacySha, StringComparison.OrdinalIgnoreCase))
+        {
+            return new ConfigApplyReport(active.Generation, active.ConfigSha256, config, AlreadyActive: true);
         }
 
         var generation = store.InsertConfig(sha, JsonSerializer.Serialize(config, JsonOptions));

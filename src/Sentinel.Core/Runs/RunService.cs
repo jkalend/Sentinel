@@ -38,6 +38,17 @@ public static class RunService
             throw new ArgumentException("redaction requires payload export.");
         }
 
+        if (signingPrivateKeyPem is not null)
+        {
+            if (string.IsNullOrWhiteSpace(signingPrivateKeyPem))
+            {
+                throw new ArgumentException("signing key is empty.", nameof(signingPrivateKeyPem));
+            }
+
+            using var probe = ECDsa.Create();
+            probe.ImportFromPem(signingPrivateKeyPem);
+        }
+
         var output = Path.GetFullPath(outputDirectory);
         if (Directory.Exists(output) && Directory.EnumerateFileSystemEntries(output).Any())
         {
@@ -171,7 +182,7 @@ public static class RunService
         manifest = manifest with { ContentSha256 = CanonicalJson.Hash(Content(manifest)) };
         manifest = manifest with { ManifestSha256 = CanonicalJson.Hash(ForManifestHash(manifest)) };
 
-        if (!string.IsNullOrWhiteSpace(signingPrivateKeyPem))
+        if (signingPrivateKeyPem is not null)
         {
             using var key = ECDsa.Create();
             key.ImportFromPem(signingPrivateKeyPem);
@@ -503,16 +514,23 @@ public static class RunService
             throw new InvalidDataException("run manifest signature is not valid base64.", ex);
         }
 
-        using var key = ECDsa.Create();
-        key.ImportFromPem(manifest.SigningPublicKeyPem);
-        var payload = Encoding.UTF8.GetBytes(CanonicalJson.Serialize(manifest with { Signature = null }));
-        if (!key.VerifyData(
-                payload,
-                signature,
-                HashAlgorithmName.SHA256,
-                DSASignatureFormat.Rfc3279DerSequence))
+        try
         {
-            throw new InvalidDataException("run manifest signature does not match.");
+            using var key = ECDsa.Create();
+            key.ImportFromPem(manifest.SigningPublicKeyPem);
+            var payload = Encoding.UTF8.GetBytes(CanonicalJson.Serialize(manifest with { Signature = null }));
+            if (!key.VerifyData(
+                    payload,
+                    signature,
+                    HashAlgorithmName.SHA256,
+                    DSASignatureFormat.Rfc3279DerSequence))
+            {
+                throw new InvalidDataException("run manifest signature does not match.");
+            }
+        }
+        catch (Exception error) when (error is ArgumentException or CryptographicException)
+        {
+            throw new InvalidDataException("run manifest signing key is invalid.", error);
         }
     }
 

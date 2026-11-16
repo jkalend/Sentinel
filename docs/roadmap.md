@@ -5,7 +5,7 @@ means preview: the local event contract is frozen, operational behavior is not.
 Each minor release is one capability slice with fixtures and explicit limits;
 nothing is promoted from this document by implication.
 
-Current release: **0.9.0** — V0.1–V0.9 fixture-validated slices: engine, release
+Current release: **0.9.1** — V0.1–V0.9 fixture-validated slices: engine, release
 tooling, V0.2 completion, event/evidence hardening, Sigma/retention, local fleet
 config, and signed evidence handoff.
 
@@ -80,7 +80,7 @@ remote rollout, and control-plane behavior remain external.
 
 ## 0.9 — External custody and signing
 
-**Partially implemented in 0.9.0:** ECDSA-signed run manifests and pinned
+**Partially implemented in 0.9.0; review fixes in 0.9.1:** ECDSA-signed run manifests and pinned
 custody references. WORM enforcement, external custody verification, and key
 lifecycle remain external.
 

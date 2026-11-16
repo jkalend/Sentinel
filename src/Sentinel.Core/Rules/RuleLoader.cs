@@ -128,7 +128,8 @@ public static class RuleLoader
     {
         var field = Convert.ToString(key, System.Globalization.CultureInfo.InvariantCulture)
             ?? throw new UnsupportedRuleException($"Rule '{ruleId}' has an empty field name.");
-        if (field is not ("process.name"
+        if (field is not ("event.id"
+            or "process.name"
             or "process.cmd_line"
             or "process.file.path"
             or "process.file.name"

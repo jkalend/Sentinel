@@ -18,6 +18,17 @@ public static class BackupService
         DateTimeOffset? now = null,
         string? signingPrivateKeyPem = null)
     {
+        if (signingPrivateKeyPem is not null)
+        {
+            if (string.IsNullOrWhiteSpace(signingPrivateKeyPem))
+            {
+                throw new ArgumentException("signing key is empty.", nameof(signingPrivateKeyPem));
+            }
+
+            using var probe = ECDsa.Create();
+            probe.ImportFromPem(signingPrivateKeyPem);
+        }
+
         var sourcePath = Path.GetFullPath(databasePath);
         var backupPath = Path.GetFullPath(outputPath);
         var manifestPath = backupPath + ".manifest.json";
@@ -54,7 +65,7 @@ public static class BackupService
                 DatabaseSha256 = HashFile(backupPath),
                 DatabaseBytes = new FileInfo(backupPath).Length
             };
-            if (!string.IsNullOrWhiteSpace(signingPrivateKeyPem))
+            if (signingPrivateKeyPem is not null)
             {
                 using var key = ECDsa.Create();
                 key.ImportFromPem(signingPrivateKeyPem);
@@ -277,17 +288,24 @@ public static class BackupService
             throw new InvalidDataException("backup manifest signature is not valid base64.", ex);
         }
 
-        using var key = ECDsa.Create();
-        key.ImportFromPem(manifest.SigningPublicKeyPem);
-        var unsigned = manifest with { Signature = null };
-        var payload = Encoding.UTF8.GetBytes(CanonicalJson.Serialize(unsigned));
-        if (!key.VerifyData(
-                payload,
-                signature,
-                HashAlgorithmName.SHA256,
-                DSASignatureFormat.Rfc3279DerSequence))
+        try
         {
-            throw new InvalidDataException("backup manifest signature does not match.");
+            using var key = ECDsa.Create();
+            key.ImportFromPem(manifest.SigningPublicKeyPem);
+            var unsigned = manifest with { Signature = null };
+            var payload = Encoding.UTF8.GetBytes(CanonicalJson.Serialize(unsigned));
+            if (!key.VerifyData(
+                    payload,
+                    signature,
+                    HashAlgorithmName.SHA256,
+                    DSASignatureFormat.Rfc3279DerSequence))
+            {
+                throw new InvalidDataException("backup manifest signature does not match.");
+            }
+        }
+        catch (Exception error) when (error is ArgumentException or CryptographicException)
+        {
+            throw new InvalidDataException("backup manifest signing key is invalid.", error);
         }
     }
 
