@@ -184,8 +184,7 @@ public static class RulePackBuilder
             }
 
             var text = File.ReadAllText(path);
-            var actual = Sha256Text(text);
-            if (!string.Equals(actual, entry.Sha256, StringComparison.OrdinalIgnoreCase))
+            if (!MatchesHash(text, entry.Sha256))
             {
                 throw new UnsupportedRuleException(
                     $"Rule pack file '{entry.File}' hash does not match the manifest.");
@@ -213,6 +212,17 @@ public static class RulePackBuilder
         return pack;
     }
 
+    /// <summary>
+    /// Hashes rule text with LF line endings so a Windows checkout and an LF
+    /// checkout of the same YAML produce the same pack and run identities.
+    /// </summary>
     public static string Sha256Text(string value) =>
+        Sha256TextRaw(value.Replace("\r\n", "\n", StringComparison.Ordinal));
+
+    public static string Sha256TextRaw(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+
+    public static bool MatchesHash(string value, string expected) =>
+        string.Equals(Sha256Text(value), expected, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Sha256TextRaw(value), expected, StringComparison.OrdinalIgnoreCase);
 }

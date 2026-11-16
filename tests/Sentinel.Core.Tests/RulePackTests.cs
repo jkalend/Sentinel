@@ -24,6 +24,36 @@ public class RulePackTests
     }
 
     [Fact]
+    public void Pack_hash_is_independent_of_line_endings()
+    {
+        var directory = NewDirectory();
+        Directory.CreateDirectory(directory);
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(TestSupport.RulesPath, "*.yaml"))
+            {
+                var text = File.ReadAllText(file).Replace("\r\n", "\n", StringComparison.Ordinal);
+                File.WriteAllText(
+                    Path.Combine(directory, Path.GetFileName(file)),
+                    text.Replace("\n", "\r\n", StringComparison.Ordinal));
+            }
+
+            var lf = RulePackBuilder.Build(TestSupport.RulesPath, "sentinel.base", "1");
+            var crlf = RulePackBuilder.Build(directory, "sentinel.base", "1");
+            Assert.Equal(lf.PackSha256, crlf.PackSha256);
+
+            RulePackBuilder.Write(crlf, Path.Combine(directory, "pack"));
+            var loaded = RulePackBuilder.LoadDirectory(Path.Combine(directory, "pack"));
+            Assert.Equal(lf.PackSha256, loaded.PackSha256);
+            Assert.Equal(3, loaded.ToRuleSet().Rules.Count);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Tampered_pack_file_is_rejected()
     {
         var directory = NewDirectory();

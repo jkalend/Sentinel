@@ -5,12 +5,12 @@ means preview: the local event contract is frozen, operational behavior is not.
 Each minor release is one capability slice with fixtures and explicit limits;
 nothing is promoted from this document by implication.
 
-Current release: **0.5.0** — V0.1–V0.4 lab/fixture slices, release tooling, and
+Current release: **0.5.1** — V0.1–V0.4 lab/fixture slices, release tooling, and
 the core V0.2 completion.
 
 ## 0.5 — V0.2 completion
 
-**Implemented in 0.5.0.** Remaining retention details (redaction lists, signed
+**Implemented in 0.5.1.** Remaining retention details (redaction lists, signed
 backup manifests, bookmark-age retention, crash-injection restore) stay open.
 The core V0.2 design items from [v02-plan.md](v02-plan.md):
 
@@ -74,7 +74,7 @@ silent fallback to a different pack or identity.
 
 | Item | Owner / disposition |
 |---|---|
-| Endpoint containment/response (isolate host, kill process, block network) | OpsMesh action lifecycle, exposed through an adapter. Not a Sentinel capability ([D-0015](../../project-planning/decisions/0015-sentinel-engine-ownership.md)). |
+| Endpoint containment/response (isolate host, kill process, block network) | OpsMesh action lifecycle, exposed through an adapter. Not a Sentinel capability ([D-0015](../../../project-planning/decisions/0015-sentinel-engine-ownership.md)). |
 | Enterprise multi-tenancy as a core property | Consuming platform/control plane; Sentinel can carry tenant identifiers only through a new accepted decision. |
 | WORM/legal-custody claims | External custody integration (0.9); no admissibility claim at any version. |
 | Full Sigma compatibility | 0.7 importer is a tested subset; full compatibility is not promised. |

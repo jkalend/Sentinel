@@ -19,9 +19,11 @@ temp-executable.yaml
 The manifest records `format: sentinel.rule-pack/v1`, pack id/version, engine and
 OCSF compatibility, creation time, and each rule's id, version, file name, and
 SHA-256. The pack hash is the canonical hash of the manifest excluding
-`created_at`, so rebuilding unchanged rules keeps the same hash. Loading verifies
-every file hash, duplicate/unlisted YAML files, and the rule id/version declared
-inside each file.
+`created_at`, so rebuilding unchanged rules keeps the same hash. Rule hashes
+normalize CRLF to LF, and `.gitattributes` forces LF checkouts; a Windows and an
+LF checkout therefore produce the same pack identity. Loading verifies every file
+hash, duplicate/unlisted YAML files, and the rule id/version declared inside each
+file.
 
 ```powershell
 sentinelctl rule-pack-build    --rules rules --id sentinel.base --version 1 --output packs/base-1
@@ -140,4 +142,4 @@ dotnet test Sentinel.slnx -c Release
 Fixture coverage includes pack hash stability, tamper rejection, activation/
 rollback, alert and run provenance, config apply/rollback/drift, collector
 allowlist, incarnation rotation/revocation, revoked-agent refusal, and compaction
-counts/size. The full suite passes 116 tests in this slice.
+counts/size. The full suite passes 117 tests in this slice.

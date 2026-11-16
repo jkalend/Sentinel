@@ -49,7 +49,7 @@ public static class RuleLoader
                     $"Rule pack file '{entry.File}' is missing from the pack contents.");
             }
 
-            if (!string.Equals(RulePackBuilder.Sha256Text(yaml), entry.Sha256, StringComparison.OrdinalIgnoreCase))
+            if (!RulePackBuilder.MatchesHash(yaml, entry.Sha256))
             {
                 throw new UnsupportedRuleException(
                     $"Rule pack file '{entry.File}' hash does not match the manifest.");
